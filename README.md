@@ -239,7 +239,7 @@ setup(scope) 可用的 scope API：
 - **右侧栏 tab 未注册**：右侧栏 tab 需要一个 kind 注册（sidebarRightTabs 服务），
   首版先用左侧栏主面板 + 会话头小按钮，后续要加再说。
 - **0.2.1 起服务名变化**：宿主半边只 inject ["webServer","agents","tools"] —— 0.2.1 移除了 webRuntime 服务，写进 inject 会让整行永远等待、静默不挂载；可信 Host 改为探测式获取。
-- **客户端依赖只用服务名**：客户端半边用 ctx.inject(["slots"], ...) 等服务就绪，不要在 dsh.client.inject 里写包名；0.2.1 已移除 @deepseek-ai/dsh-client-ui-slots，写死包名会让条目 "did not activate" 并导致 web boot 报错。
+- **客户端依赖用服务名 + 注册必须 try/catch**：客户端半边用 ctx.inject(["slots"], ...) 等服务就绪，不要在 dsh.client.inject 里堆包名——客户端 loader 把每个 inject 名字当 ctx 服务去等（官方客户端条目都不写 ui-slots），等不到就停在 pending，web boot 报 "pending (waiting for service: …)"。注意 @deepseek-ai/dsh-client-ui-slots 并未被移除：它仍是 web 前端内置的核心模块（seed 注册表 = react / react-dom / @deepseek-ai/cordis / zod / @tanstack/react-virtual / dsh-client-store / **dsh-client-ui-slots** / dsh-client-ui-primitives / dsh-client-ui-dockkit），可以在工厂里 require。真正把我们打爆的是**客户端条目里任意注册抛异常**：条目状态变 failed，web boot 立刻报 "Error: web boot: 1 entry did not activate / polaris-toolkit: failed"，所以所有座席注册一律 try/catch 只告警。
 - **不要双重挂载**：包既然在 dsh.profile.bundles 里，cordis.patch.yml 就不要再为它写 insert；
   两条挂载 = 两条 /__polaris 路由 = 整个 feature 树挂载失败。
 - **只能在重启后生效**：host 半边没有热加载（除非 profile 里装了 hmr）。
