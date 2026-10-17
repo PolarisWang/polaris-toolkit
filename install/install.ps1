@@ -1,4 +1,4 @@
-﻿# install.ps1 - 把 polaris-toolkit 作为本地目录包装进 DSH profile（默认 desktop）。
+# install.ps1 - 把 polaris-toolkit 作为本地目录包装进 DSH profile（默认 desktop）。
 # 用法: powershell -ExecutionPolicy Bypass -File install\install.ps1
 #       可选: -Profile <目录>  -NoBundles  -KeepOld
 # 说明: Polaris Toolkit 是入口包，Heap Guard 只是其中一个 feature。
@@ -101,9 +101,12 @@ foreach ($f in @('package.json', 'cordis.patch.yml', 'README.md')) {
   $src = Join-Path $pkgRoot $f
   if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $dest $f) -Force }
 }
-foreach ($d in @('lib', 'bin')) {
+foreach ($d in @('lib', 'bin', 'docs')) {
   $src = Join-Path $pkgRoot $d
-  if (-not (Test-Path -LiteralPath $src)) { throw ('missing package directory: ' + $src) }
+  if (-not (Test-Path -LiteralPath $src)) {
+    if ($d -eq 'lib' -or $d -eq 'bin') { throw ('missing package directory: ' + $src) }
+    continue
+  }
   Copy-Item -LiteralPath $src -Destination (Join-Path $dest $d) -Recurse -Force
 }
 $stray = Get-ChildItem -LiteralPath $dest -Recurse -Directory -Filter 'node_modules' -ErrorAction SilentlyContinue

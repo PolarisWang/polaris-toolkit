@@ -57,7 +57,10 @@ Heap Guard 做三件事：
             slim.js         瘦身执行器（调用 bin/slim.mjs）与 AutoSlimmer（自动清理节流）
             snapshot.js     写 V8 堆快照与轮转
             bili.js         bili 配置读写与预算调整
+            titles.js       会话名缓存（子进程扫描 + mtime/size 校验 + 内存标题）
       bin/slim.mjs          独立瘦身脚本（子进程运行，可脱离插件单用）
+      bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
+      docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
       install/
         install.ps1         安装到 profile（复制文件 + 写 bundles + 清退旧包）
         uninstall.ps1       卸载
@@ -98,10 +101,13 @@ Heap Guard 做三件事：
 2. **第二层 KPI**：堆、RSS、agent 数、会话总量、系统内存、磁盘剩余。
 3. **第三层 阈值与趋势**：warn/high/critical/emergency 四档进度条 + 最近采样曲线。
 4. **第四层 操作**：按钮区 + 瘦身档位下拉 + 每次上限输入。
-5. **第五层 候选会话表**：按体积排序的会话（大小/工作区/是否已关闭/最后修改），每行一个"清理"按钮。
-6. **折叠区**（默认收起）：内存分代明细、系统与磁盘、堆快照、运行状态（状态目录、上次动作、错误）。
+5. **第五层 候选会话表**：按体积排序的会话（名称 / ID / 工作区 / 大小 / 最后修改 / 是否已关闭），每行一个"清理"按钮。
+   名称取自会话日志里的 `session/title` 事件，由独立子进程按帧有界扫描后缓存，不进宿主堆。
+6. **折叠区**（默认收起）：内存分代明细、系统与磁盘、堆快照、运行状态（状态目录、会话名缓存、上次动作、错误）。
 
-面板每 5 秒刷新一次；所有请求都相对页面解析（不看主机名/端口），因此反代或自定义端口都能用。
+刷新节奏（省电也省堆）：外壳左侧卡片每 5 秒拉一次 `api/features`（页面隐藏即停），右侧 iframe **只在切换功能时换源**，
+不再整页重载，所以滚动位置与 `<details>` 展开状态都不会丢；面板内部先打轻量心跳 `api/tick`（5 秒），
+只有 `rev` 变化才回拉完整状态，空闲时每 30 秒兜底刷新一次。所有请求都相对页面解析（不看主机名/端口），因此反代或自定义端口都能用。
 
 ### 功能按钮
 
@@ -110,6 +116,7 @@ Heap Guard 做三件事：
 | 立即清理（最大） | 对当前最大的安全候选（已关闭且超过 minMB）执行一次瘦身，默认按面板档位 |
 | 立即清理（全部候选） | 串行清理全部候选，每轮受"每次上限"限制（默认 20），执行前确认 |
 | 试运行 | 只统计能省多少字节，不写盘 |
+| 刷新会话名 | 重新扫描会话日志里的 session/title 事件（有界子进程），刷新表格的"名称"列 |
 | 自动清理 | **开关**，默认关。打开后：等级达到阈值 + 处于安全点（无 agent 在跑）+ 冷却期已过 + 每小时次数未超限，才自动清理一个会话 |
 | 写堆快照 | 手工 v8.writeHeapSnapshot()（默认保留最新 2 份，磁盘低于 5 GB 时拒绝） |
 | 应用 bili 预算 | 把面板里的 max/residentMaxBytes/warmMax/warmMaxBytes 写进 bili 配置 |
@@ -181,6 +188,7 @@ autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、max
     features/heap-guard/samples.csv   采样 CSV（config.csv=true 时）
     features/heap-guard/slim-backup-*/ 每次瘦身前的原文件备份
     features/heap-guard/snapshots/    V8 堆快照
+    features/heap-guard/titles.json   会话名缓存（按会话 id，带 mtime/size 校验）
 
 瘦身档位（bin/slim.mjs）：
 
@@ -192,6 +200,11 @@ autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、max
 安全点判定：读会话文件最后几帧，若最新结构记录是 turn/end，且文件在 quietSec 内没再变化，
 且宿主没有 runner/工具子进程，且没有 hold 文件，才算安全。被打断的回合在下次加载时由 DSH
 自动补出 interrupted 的 turn/end，所以安全点重启/瘦身不会让会话逻辑错乱。
+
+会话名（bin/titles.mjs）：会话开头会写两条 `session/title`——先是机械 fallback（首条人类消息截到约 40 字节），
+随后是标题服务的正式结果（source=provider/user）。扫描取**序号最大的那条**（正式名优先）：先扫头部窗口
+（默认 96 帧）找正式名，只有拿到 fallback 才继续扫到 max-frames；头部整段都没有才退到尾部窗口（改名场景）。
+缓存以 mtime+size 校验，文件一变就重扫；运行中的会话优先用内存里的标题（sessionQuery.readTitleSnapshots）。
 
 ---
 

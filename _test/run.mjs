@@ -101,7 +101,8 @@ assert.equal(features.features.length, 1);
 const f = features.features[0];
 assert.equal(f.id, "heap-guard");
 assert.equal(f.title, "Heap Guard");
-assert.equal(f.actions.length, 6, "six actions");
+assert.equal(f.actions.length, 7, "seven actions");
+assert.ok(f.actions.some((a) => a.id === "title-refresh"), "refresh session titles");
 assert.ok(f.actions.some((a) => a.label.indexOf("立即清理（最大）") === 0), "immediate clean button");
 assert.ok(f.actions.some((a) => a.kind === "toggle" && a.setting === "autoSlim"), "auto-clean toggle");
 assert.ok(f.actions.some((a) => a.id === "slim-all" && a.confirm), "clean-all is confirmed");
@@ -149,6 +150,19 @@ assert.equal(toggled.value, false, "toggle flipped back");
 const sessions = await json(await call(feature, "GET", "/__polaris/heap-guard/api/sessions?limit=3"));
 assert.ok(Array.isArray(sessions.sessions), "sessions array");
 assert.ok(sessions.sessions.length <= 3, "limit honoured");
+assert.ok(sessions.titles && typeof sessions.titles.queued === "number", "title summary rides along");
+
+// 7b. light heartbeat for the pyramid hero
+const tick = await json(await call(feature, "GET", "/__polaris/heap-guard/api/tick"));
+assert.equal(tick.ok, true);
+assert.ok(typeof tick.rev === "string" && tick.rev.length > 0, "change signature present");
+assert.ok(tick.sample && typeof tick.sample.limitMB === "number", "tick sample");
+assert.ok(tick.titles && typeof tick.titles.known === "number", "tick titles");
+
+// 7c. title store api
+const titlesApi = await json(await call(feature, "GET", "/__polaris/heap-guard/api/titles"));
+assert.equal(titlesApi.ok, true);
+assert.ok(Array.isArray(titlesApi.entries), "titles entries");
 
 // 8. bili view (config file read, no write)
 const bili = await json(await call(feature, "GET", "/__polaris/heap-guard/api/bili"));
