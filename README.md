@@ -238,6 +238,8 @@ setup(scope) 可用的 scope API：
   react 系列、cordis、dsh-client-store、ui-slots、ui-primitives、ui-dockkit。
 - **右侧栏 tab 未注册**：右侧栏 tab 需要一个 kind 注册（sidebarRightTabs 服务），
   首版先用左侧栏主面板 + 会话头小按钮，后续要加再说。
+- **0.2.1 起服务名变化**：宿主半边只 inject ["webServer","agents","tools"] —— 0.2.1 移除了 webRuntime 服务，写进 inject 会让整行永远等待、静默不挂载；可信 Host 改为探测式获取。
+- **客户端依赖只用服务名**：客户端半边用 ctx.inject(["slots"], ...) 等服务就绪，不要在 dsh.client.inject 里写包名；0.2.1 已移除 @deepseek-ai/dsh-client-ui-slots，写死包名会让条目 "did not activate" 并导致 web boot 报错。
 - **不要双重挂载**：包既然在 dsh.profile.bundles 里，cordis.patch.yml 就不要再为它写 insert；
   两条挂载 = 两条 /__polaris 路由 = 整个 feature 树挂载失败。
 - **只能在重启后生效**：host 半边没有热加载（除非 profile 里装了 hmr）。
