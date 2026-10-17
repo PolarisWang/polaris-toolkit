@@ -1,0 +1,40 @@
+{
+  "name": "polaris-toolkit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Polaris Toolkit: one DSH host plugin hosting multiple features. Heap Guard is the first: host V8 heap observability, safe session slimming, bili budget control, and a pyramid dashboard with immediate-clean and auto-clean controls.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "bin",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-modules"
+      ],
+      "platform": "web"
+    },
+    "manifestVersion": 1
+  },
+  "scripts": {
+    "test": "node _test/run.mjs",
+    "slim": "node bin/slim.mjs"
+  },
+  "license": "MIT"
+}

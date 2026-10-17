@@ -1,0 +1,19 @@
+# polaris-toolkit bundle patch
+#
+# 把工具包的宿主半边挂成一个 loader 行。只有当本包出现在 profile 的
+# dsh.profile.bundles 里时这一层才会被应用（安装脚本负责追加）；此时
+# profile 自己的 cordis.patch.yml 里不能再手写一行挂载同一个包，否则会挂两次、
+# webserver 路由重复，整棵插件树都会失败。
+#
+# 每个功能的配置写在行的 config.features.<feature-id> 下，例如：
+#   - insert:
+#       - id: polaris-toolkit
+#         name: 'polaris-toolkit'
+#         config:
+#           features:
+#             heap-guard:
+#               intervalSec: 20
+#               slim: { level: 3, minMB: 8 }
+- insert:
+    - id: polaris-toolkit
+      name: 'polaris-toolkit'
