@@ -102,6 +102,8 @@ lib/client.js 用槽位注册，四处入口共享同一个落点：
 会话名缓存：`features/heap-guard/titles.json`，以 mtime+size 校验；运行中的会话优先用
 `sessionQuery.readTitleSnapshots()` 的内存标题。识别标题时**取序号最大的一条**
 （fallback 是首条消息截断名，provider/user 才是正式名）。
+缓存条目带格式版本号（`v`），扫描/解析逻辑一变，旧条目自动失效重扫；缓存键统一成去掉
+`session-` 前缀的裸会话 id，内存标题与磁盘扫描因此共用同一份条目。
 
 ## 6. 面板金字塔
 

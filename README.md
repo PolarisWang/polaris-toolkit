@@ -214,6 +214,7 @@ autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、max
 随后是标题服务的正式结果（source=provider/user）。扫描取**序号最大的那条**（正式名优先）：先扫头部窗口
 （默认 96 帧）找正式名，只有拿到 fallback 才继续扫到 max-frames；头部整段都没有才退到尾部窗口（改名场景）。
 缓存以 mtime+size 校验，文件一变就重扫；运行中的会话优先用内存里的标题（sessionQuery.readTitleSnapshots）。
+缓存条目带格式版本号（v），解析逻辑升级后旧条目自动重扫；缓存键统一为裸会话 id（去掉 session- 前缀），内存标题与磁盘扫描同键。
 
 ---
 

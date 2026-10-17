@@ -48,7 +48,7 @@ function parseArgs(argv) {
     else if (a === "--head-frames") o.headFrames = Math.max(4, Number(val()));
     else if (a === "--max-frames") o.maxFrames = Math.max(8, Number(val()));
     else if (a === "--max") o.max = Math.max(1, Number(val()));
-    else if (a === "--out") o.out = path.resolve(val());
+    else if (a === "--out") { const v = val(); o.out = v === "-" ? undefined : path.resolve(v); } // "-" = stdout only
     else if (a === "--all") o.all = true;
     else throw new Error("unknown argument " + a);
   }
