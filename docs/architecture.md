@@ -17,6 +17,12 @@ DSH 只把 `dsh.profile.bundles` 里的包变成 Loader entry（仅仅写进 dep
 `webServer` 提供 `register/serve`，`tools` 提供工具注册，`agents` 提供会话/agent 视图。
 可选服务用 `ctx.get(name)` 探测（例如 `sessions`、`sessionQuery`），缺席时必须静默降级。
 
+安装方式：`install/install.ps1` 把本仓库写成 profile 的**注入式本地依赖**
+（`dependencies["polaris-toolkit"] = "file:<仓库路径>"` + `dependenciesMeta["polaris-toolkit"].injected = true`），
+再在该 profile 里跑一次 `pnpm install`；pnpm 按 `package.json` 的 `files` 字段把仓库文件**真实复制**进
+`node_modules/polaris-toolkit`（不能用符号链接：插件自身的 `@deepseek-ai/*` 依赖要按该 profile 的
+node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变了必须重启 DSH。
+
 ## 2. 目录
 
     lib/index.js                 插件入口：PREFIX = "/__polaris"，Config = { features: {} }
@@ -32,7 +38,7 @@ DSH 只把 `dsh.profile.bundles` 里的包变成 Loader entry（仅仅写进 dep
     lib/client.js                客户端入口：注册左侧栏面板、右侧 tab、会话头 chip、设置页
     bin/slim.mjs                 会话瘦身子进程（L1/L2/L3）
     bin/titles.mjs               会话名扫描子进程（有界读帧）
-    install/install.ps1          安装到 %USERPROFILE%\.dsh\profiles\<profile>
+    install/install.ps1          安装到 %USERPROFILE%\.dsh\profiles\<profile>（注入式 file: 依赖 + pnpm install + 写 bundles）
     _test/run.mjs                离线自测（假 ctx，跑通路由/工具/设置/面板）
 
 ## 3. feature 契约

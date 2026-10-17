@@ -62,8 +62,8 @@ Heap Guard 做三件事：
       bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
       docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
       install/
-        install.ps1         安装到 profile（复制文件 + 写 bundles + 清退旧包）
-        uninstall.ps1       卸载
+        install.ps1         安装到 profile（注入式 file: 依赖 + pnpm install + 写 bundles + 清退旧包）
+        uninstall.ps1       卸载（JSON 手术移除依赖/bundles，或 -Restore 还原备份）
       _test/run.mjs         离线自测（假 ctx，不连 DSH；node _test/run.mjs）
 
 ---
@@ -75,19 +75,28 @@ Heap Guard 做三件事：
     powershell -ExecutionPolicy Bypass -File install\install.ps1
 
 它做四件事：备份 profile 的 package.json -> 清退旧包 dsh-heap-guard（如存在）->
-复制 lib/bin/package.json/cordis.patch.yml/README.md 到
+把本仓库写成 profile 的**注入式本地依赖**（dependencies["polaris-toolkit"] = "file:D:/agent/polaris-toolkit"，
+dependenciesMeta["polaris-toolkit"].injected = true）-> 用宿主自带的 node + pnpm 在该 profile 里跑一次
+`pnpm install`（自动沿用 profile 的 --store-dir），pnpm 按本包 package.json 的 files 字段把仓库文件
+真实复制到
     %USERPROFILE%\.dsh\profiles\desktop\node_modules\polaris-toolkit
 -> 把 "polaris-toolkit" 追加进 dsh.profile.bundles。
 
-参数：-Profile <目录>（默认 desktop）、-NoBundles（只复制不挂载）、-KeepOld（保留旧包）。
+为什么用注入式依赖而不是手工复制：profile 里任何一次 pnpm 操作都会把"不在依赖树里"的
+node_modules 目录挪进 .ignored\；写成 injected 的 file: 依赖后，pnpm 会主动维护这份副本。
+代价是注入副本属于**运行时快照**：改完仓库要重跑 install.ps1（或在该 profile 里再跑一次 pnpm install）。
 
-**安装后必须重启 DSH**：host 半边在启动时加载，页面刷新不够。
+参数：-Profile <目录>（默认 desktop）、-NoBundles（只装不挂载）、-KeepOld（保留旧包）、
+-NoPnpm（跳过 pnpm，退回手工复制并警告）。
 
-升级：重新跑一次 install.ps1（会先删旧目录再复制）。
+**安装/升级后必须重启 DSH**：host 半边在 DSH 启动时加载，页面刷新不够（客户端半边刷新即可）。
+
+升级：改完仓库重新跑一次 install.ps1。
 卸载：powershell -ExecutionPolicy Bypass -File install\uninstall.ps1
-（状态数据保留在 %USERPROFILE%\.dsh\polaris-toolkit，可自行删除）。
+（-Restore <备份> 可还原某次安装前的 package.json；状态数据保留在 %USERPROFILE%\.dsh\polaris-toolkit，
+可自行删除）。
 
-开发用的 _test/ 与 node_modules 联接不会被复制到 profile。
+_test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin / docs / cordis.patch.yml / README.md）。
 
 ---
 

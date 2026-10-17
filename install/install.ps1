@@ -1,13 +1,24 @@
-# install.ps1 - 把 polaris-toolkit 作为本地目录包装进 DSH profile（默认 desktop）。
+﻿# install.ps1 - 把 polaris-toolkit 装进 DSH profile（默认 desktop 配置）。
 # 用法: powershell -ExecutionPolicy Bypass -File install\install.ps1
-#       可选: -Profile <目录>  -NoBundles  -KeepOld
-# 说明: Polaris Toolkit 是入口包，Heap Guard 只是其中一个 feature。
-#       以后新增 feature 不需要改这个脚本，只要在 lib/features/index.js 里注册。
+#       可选: -Profile <目录>  -NoBundles  -NoPnpm  -KeepOld
+#
+# 安装方式（0.2.x 起）：把本仓库登记成 profile 的「注入式 file: 依赖」
+#   dependencies["polaris-toolkit"]        = "file:<仓库路径>"
+#   dependenciesMeta["polaris-toolkit"].injected = true
+#   dsh.profile.bundles                   += "polaris-toolkit"
+# 为什么不再直接复制文件：pnpm 会把 node_modules 里「不在依赖树中」的目录挪进
+#   node_modules\.ignored，复制进去的插件会在任何一次 pnpm 操作（例如市场升级其他插件）后消失。
+# 为什么用 injected 而不是 file: 的默认符号链接：node 解析会先取真实路径，符号链接会让插件里的
+#   @deepseek-ai/* 解析到本仓库目录而失败；injected 会在 node_modules\polaris-toolkit 放一份
+#   真实目录副本，同时仍算在依赖树里，pnpm 不会清理它。
+# -NoPnpm 退回旧的「手工复制」方式（仅在没有可用 pnpm 时兜底，不推荐）。
+# 以后新增 feature 不需要改这个脚本，只要在 lib/features/index.js 里注册。
 #requires -Version 5.1
 [CmdletBinding()]
 param(
   [string]$Profile = '',
   [switch]$NoBundles,
+  [switch]$NoPnpm,
   [switch]$KeepOld
 )
 $ErrorActionPreference = 'Stop'
@@ -22,55 +33,15 @@ if ([string]::IsNullOrEmpty($Profile)) { $Profile = Join-Path $userHome '.dsh\pr
 $pkgName = 'polaris-toolkit'
 $oldName = 'dsh-heap-guard'
 
-function Remove-BundleEntry {
-  param([string]$Manifest, [string]$Name)
-  $json = [System.IO.File]::ReadAllText($Manifest)
-  if ($json -notmatch ('"' + [regex]::Escape($Name) + '"')) { return $false }
-  $pattern = '\s*"' + [regex]::Escape($Name) + '"\s*,'
-  $next = [regex]::Replace($json, $pattern, '', 1)
-  if ($next -eq $json) {
-    $pattern2 = ',\s*"' + [regex]::Escape($Name) + '"'
-    $next = [regex]::Replace($json, $pattern2, '', 1)
-  }
-  if ($next -eq $json) { return $false }
-  [System.IO.File]::WriteAllText($Manifest, $next)
-  Write-Host ('removed "' + $Name + '" from dsh.profile.bundles')
-  return $true
+function Get-Manifest {
+  param([string]$Path)
+  return (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($Path)))
 }
 
-function Add-BundleEntry {
-  param([string]$Manifest, [string]$Name)
-  $json = [System.IO.File]::ReadAllText($Manifest)
-  if ($json -match ('"' + [regex]::Escape($Name) + '"')) {
-    Write-Host ('package.json already lists ' + $Name)
-    return
-  }
-  $m = [regex]::Match($json, '"bundles"\s*:\s*\[')
-  if (-not $m.Success) { throw 'could not find "dsh.profile.bundles" in package.json' }
-  $i = $m.Index + $m.Length
-  $depth = 1
-  $inStr = $false
-  $esc = $false
-  $end = -1
-  while ($i -lt $json.Length) {
-    $ch = $json[$i]
-    if ($inStr) {
-      if ($esc) { $esc = $false }
-      elseif ($ch -eq [char]92) { $esc = $true }
-      elseif ($ch -eq '"') { $inStr = $false }
-    } else {
-      if ($ch -eq '"') { $inStr = $true }
-      elseif ($ch -eq '[') { $depth = $depth + 1 }
-      elseif ($ch -eq ']') { $depth = $depth - 1; if ($depth -eq 0) { $end = $i; break } }
-    }
-    $i = $i + 1
-  }
-  if ($end -lt 0) { throw 'unterminated dsh.profile.bundles array' }
-  $inside = $json.Substring($m.Index + $m.Length, $end - ($m.Index + $m.Length))
-  if ($inside.Trim().Length -eq 0) { $add = '"' + $Name + '"' } else { $add = ', "' + $Name + '"' }
-  $json = $json.Substring(0, $end) + $add + $json.Substring($end)
-  [System.IO.File]::WriteAllText($Manifest, $json)
-  Write-Host ('appended "' + $Name + '" to dsh.profile.bundles')
+function Save-Manifest {
+  param([string]$Path, $Manifest)
+  $text = ConvertTo-Json -InputObject $Manifest -Depth 12
+  [System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($true)))
 }
 
 $pkgRoot = Split-Path -Parent $PSScriptRoot
@@ -83,48 +54,101 @@ $backup = Join-Path $profileDir ('package.json.before-' + $pkgName + '-' + $stam
 Copy-Item -LiteralPath $manifest -Destination $backup
 Write-Host ('backup package.json -> ' + $backup)
 
-# 1) 清退旧包（dsh-heap-guard 是同一个插件的旧名字；两套面板/两套路由会互相干扰）
+# 0) 清退旧包名（dsh-heap-guard 是同一个插件的旧名字；两套面板/两套路由会互相干扰）
 if (-not $KeepOld) {
   $oldDest = Join-Path $profileDir ('node_modules\' + $oldName)
-  if (Test-Path -LiteralPath $oldDest) {
-    Remove-Item -LiteralPath $oldDest -Recurse -Force
-    Write-Host ('removed old plugin dir ' + $oldDest)
-  }
-  Remove-BundleEntry -Manifest $manifest -Name $oldName | Out-Null
+  if (Test-Path -LiteralPath $oldDest) { Remove-Item -LiteralPath $oldDest -Recurse -Force; Write-Host ('removed old plugin dir ' + $oldDest) }
 }
 
-# 2) 复制插件文件（只取运行时需要的目录/文件，绝不复制开发用的 _test 与 node_modules 联接）
-$dest = Join-Path $profileDir ('node_modules\' + $pkgName)
-if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
-New-Item -ItemType Directory -Path $dest -Force | Out-Null
-foreach ($f in @('package.json', 'cordis.patch.yml', 'README.md')) {
-  $src = Join-Path $pkgRoot $f
-  if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $dest $f) -Force }
+# 1) 写清单：注入式 file: 依赖 + bundle 名
+$m = Get-Manifest $manifest
+if (-not $m.dependencies) { $m | Add-Member -NotePropertyName dependencies -NotePropertyValue (New-Object psobject) }
+if (-not $m.dependenciesMeta) { $m | Add-Member -NotePropertyName dependenciesMeta -NotePropertyValue (New-Object psobject) }
+if (-not $m.dsh -or -not $m.dsh.profile) { throw 'package.json has no "dsh.profile" section' }
+$spec = 'file:' + ($pkgRoot -replace '\\', '/')
+$m.dependencies | Add-Member -NotePropertyName $pkgName -NotePropertyValue $spec -Force
+$m.dependenciesMeta | Add-Member -NotePropertyName $pkgName -NotePropertyValue ([pscustomobject]@{ injected = $true }) -Force
+if (-not $KeepOld) {
+  if ($m.dependenciesMeta.PSObject.Properties[$oldName]) { $m.dependenciesMeta.PSObject.Properties.Remove($oldName) }
+  if ($m.dependencies.PSObject.Properties[$oldName]) { $m.dependencies.PSObject.Properties.Remove($oldName) }
 }
-foreach ($d in @('lib', 'bin', 'docs')) {
-  $src = Join-Path $pkgRoot $d
-  if (-not (Test-Path -LiteralPath $src)) {
-    if ($d -eq 'lib' -or $d -eq 'bin') { throw ('missing package directory: ' + $src) }
-    continue
+$bundles = @()
+if ($m.dsh.profile.bundles) { $bundles = @($m.dsh.profile.bundles) }
+if (-not $KeepOld) { $bundles = @($bundles | Where-Object { $_ -ne $oldName }) }
+if (-not $NoBundles -and ($bundles -notcontains $pkgName)) { $bundles = @($bundles) + $pkgName }
+if (@($bundles).Count -lt 1) { throw 'refusing to write an empty dsh.profile.bundles (pass -NoBundles only on a filled profile)' }
+$m.dsh.profile.bundles = @($bundles)
+Save-Manifest -Path $manifest -Manifest $m
+try {
+  $verify = Get-Manifest $manifest
+  $vb = @($verify.dsh.profile.bundles)
+  if ($vb.Count -lt 1) { throw 'dsh.profile.bundles ended up empty' }
+  $vs = [string]$verify.dependencies.$pkgName
+  if ($vs.Length -eq 0) { throw ('dependencies.' + $pkgName + ' missing after write') }
+  Write-Host ('manifest: dependencies.' + $pkgName + ' = ' + $vs + ' (injected), bundles = ' + ($vb -join ', '))
+}
+catch {
+  Copy-Item -LiteralPath $backup -Destination $manifest -Force
+  throw ('package.json write failed and was rolled back: ' + $_.Exception.Message)
+}
+
+# 2) pnpm install：把仓库内容注入到 node_modules\polaris-toolkit（真实目录副本）
+$nodeExe = $null
+$pnpmCmd = $null
+if (-not $NoPnpm) {
+  $rt = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies'
+  $candNode = Join-Path $rt 'node\bin\node.exe'
+  $candPnpm = Join-Path $rt 'pnpm\bin\pnpm.cjs'
+  if (Test-Path -LiteralPath $candNode) { $nodeExe = $candNode }
+  if (Test-Path -LiteralPath $candPnpm) { $pnpmCmd = $candPnpm }
+  if (-not $pnpmCmd) { $c = Get-Command pnpm -ErrorAction SilentlyContinue; if ($c) { $pnpmCmd = $c.Source } }
+  if (-not $nodeExe) { $c = Get-Command node -ErrorAction SilentlyContinue; if ($c) { $nodeExe = $c.Source } }
+}
+
+if ($pnpmCmd) {
+  $storeArgs = @()
+  $mods = Join-Path $profileDir 'node_modules\.modules.yaml'
+  if (Test-Path -LiteralPath $mods) {
+    $hit = [regex]::Match([System.IO.File]::ReadAllText($mods), '"storeDir"\s*:\s*"([^"]+)"')
+    if ($hit.Success) { $storeArgs = @('--store-dir', $hit.Groups[1].Value.Replace('\\', '\')) }
   }
-  Copy-Item -LiteralPath $src -Destination (Join-Path $dest $d) -Recurse -Force
+  if ($pnpmCmd -like '*.cjs' -or $pnpmCmd -like '*.mjs' -or $pnpmCmd -like '*.js') { $exe = $nodeExe; $argv = @($pnpmCmd) } else { $exe = $pnpmCmd; $argv = @() }
+  $argv = $argv + @('install') + $storeArgs
+  Write-Host ('running: ' + $exe + ' ' + ($argv -join ' '))
+  Push-Location $profileDir
+  try { & $exe @argv | Out-Host } finally { Pop-Location }
+  if ($LASTEXITCODE -ne 0) { throw ('pnpm install failed with exit code ' + $LASTEXITCODE + ' — package.json keeps the dependency; fix pnpm then re-run') }
 }
-$stray = Get-ChildItem -LiteralPath $dest -Recurse -Directory -Filter 'node_modules' -ErrorAction SilentlyContinue
-foreach ($s in $stray) { Remove-Item -LiteralPath $s.FullName -Recurse -Force; Write-Host ('dropped test-only dir ' + $s.FullName) }
+else {
+  Write-Warning 'no usable pnpm or node found — falling back to a plain file copy; the next pnpm run will move it to node_modules\.ignored'
+  $dest = Join-Path $profileDir ('node_modules\' + $pkgName)
+  if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+  New-Item -ItemType Directory -Path $dest -Force | Out-Null
+  foreach ($f in @('package.json', 'cordis.patch.yml', 'README.md')) {
+    $src = Join-Path $pkgRoot $f
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $dest $f) -Force }
+  }
+  foreach ($d in @('lib', 'bin', 'docs')) {
+    $src = Join-Path $pkgRoot $d
+    if (-not (Test-Path -LiteralPath $src)) {
+      if ($d -eq 'lib' -or $d -eq 'bin') { throw ('missing package directory: ' + $src) }
+      continue
+    }
+    Copy-Item -LiteralPath $src -Destination (Join-Path $dest $d) -Recurse -Force
+  }
+}
+
+# 3) 校验安装结果
+$dest = Join-Path $profileDir ('node_modules\' + $pkgName)
+if (-not (Test-Path -LiteralPath (Join-Path $dest 'lib\index.js'))) { throw ('install produced no plugin entry: ' + $dest + '\lib\index.js') }
+if (-not (Test-Path -LiteralPath (Join-Path $dest 'cordis.patch.yml'))) { throw ('install produced no bundle patch: ' + $dest + '\cordis.patch.yml') }
 $n = (Get-ChildItem -LiteralPath $dest -Recurse -File | Measure-Object).Count
 Write-Host ('installed ' + $n + ' files -> ' + $dest)
-
-# 3) 挂载：包名写进 dsh.profile.bundles，包的 cordis.patch.yml 由 bundle 机制自动插入
-#    注意：profile 的 cordis.patch.yml 不要为同一个包再写一行 insert，否则双重挂载。
-if (-not $NoBundles) {
-  Add-BundleEntry -Manifest $manifest -Name $pkgName
-  try { Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json | Out-Null }
-  catch { Write-Warning ('package.json may be invalid JSON: ' + $_.Exception.Message) }
-}
-
 Write-Host ''
 Write-Host 'NEXT: restart DSH (quit from the tray/menu, then start it again).'
 Write-Host 'The host half is loaded at boot, so a page reload is not enough.'
 Write-Host 'After the restart: Settings -> Plugins lists polaris-toolkit, the left sidebar'
 Write-Host 'shows the Polaris Toolkit entry, and the panel lives at /__polaris/panel.'
+Write-Host 'After editing this repository, re-run this script (or "pnpm install" in the profile)'
+Write-Host 'so the injected copy picks up the change.'
 Write-Host ('State: ' + (Join-Path $userHome '.dsh\polaris-toolkit'))
