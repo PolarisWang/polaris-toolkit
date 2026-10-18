@@ -61,6 +61,7 @@ Heap Guard 做三件事：
       bin/slim.mjs          独立瘦身脚本（子进程运行，可脱离插件单用）
       bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
       docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
+      docs/steward-design.md  大内总管团（D-δ）设计：联邦 / 工作流引擎 / 规则 / 会话与轮换
       install/
         install.ps1         安装到 profile（注入式 file: 依赖 + pnpm install + 写 bundles + 清退旧包）
         uninstall.ps1       卸载（JSON 手术移除依赖/bundles，或 -Restore 还原备份）
