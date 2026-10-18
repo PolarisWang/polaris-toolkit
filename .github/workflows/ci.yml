@@ -1,0 +1,32 @@
+name: CI
+
+# 评审 P2-C：本地与 CI 跑同一条命令（node _test/all.mjs 自己枚举测试文件，
+# 免得 Windows shell 的 glob 与 Linux 不一致）。
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [ "20", "22", "24" ]
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Unit tests + smoke
+        run: npm test
+      - name: Coverage gate
+        # 覆盖率门槛用到 Node 22.8+ 的 --test-coverage-* 标志，只跑一条腿。
+        if: matrix.node == '22'
+        run: npm run test:coverage

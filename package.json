@@ -31,10 +31,11 @@
     "manifestVersion": 1
   },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\" && node _test/run.mjs",
+    "test": "node _test/all.mjs",
     "slim": "node bin/slim.mjs",
     "doctor": "node bin/polaris.mjs doctor",
-    "polaris:install": "node bin/polaris.mjs install"
+    "polaris:install": "node bin/polaris.mjs install",
+    "test:coverage": "node _test/all.mjs --coverage"
   },
   "license": "MIT"
 }

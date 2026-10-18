@@ -53,15 +53,18 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
       index.js                   只做装配（约 300 行）：全部构造都包 attempt，失败只降级、不抛
       config.js                  Config/settings/settingsSchema/normalize/readSettings
       state.js                   只读视图；metrics.js 指标发布；brain.js 编排器（tick 骨架 + 事件桥）
-      http.js                    路由表 + 5 个 agent 工具 + action/status
+      http.js                    路由表 + 5 个 agent 工具（observe/status/begin/report/ask）+ action/status
+      tools.js                   另外 6 个 agent 工具：trace / audit / tasks / stewards / chat / settings
       policy.js                  分级授权：actLevel L1/L2/L3 与动作需求表（gate 只记日志不抛）
       tasks.js                   交办队列：tasks 表状态机 + 派单（prompt 幂等）+ tick 补槽 + turn/end 转 review
       actuators/gated.js         echo/live 闸门（echo 只把拟执行动作写进账本）
-      panel.js                   金字塔面板：结论 / 待处理 / 控制 / 交办 / 对话 / 正在发生 / 主管 /
+      panel.js                   金字塔面板：结论 / 要我拍板 / 控制 / 设置 / 交办 / 对话 / 正在发生 / 主管 /
                                  能力仓 / 路由 / agent 明细 / 记录 / 审计 / 追查 / 体检 / 维护
-      core/{store,db,schema,approvals,bus,health}.js  账本 + 12 表（sqlite 或 JSON 降级）+ 审批
+      core/{store,db,schema,approvals,bus,health}.js  账本 + 17 表（sqlite 或 JSON 降级）+ 审批；
+                                                      store.chargeOf 决定哪类动作计入预算
       wf/engine.js               持久工作流引擎（原 5 个内置流程已 1:1 迁成片段能力 plan.*）
       plane/{catalog,instances,preset,tree,expr,carriers,pipeline,grants,mount}.js
+                                  （grant 由 grants.js 按 policy NEEDS 映射；trace 读写走 lib/core/trace.js）
                                  能力平面：能力仓 / 首批 22 条实例 / 内置编制 / 决策树 / 表达式载体 /
                                  载体适配 / 裁决管线 / 授权映射 / 装配；lib/core/trace.js 存 trace/span/
                                  effect/intent 并映射 OTLP
@@ -72,12 +75,18 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
       federation/{envelope,peer}.js                     HMAC 信封与白名单命令
     lib/panel.js                 工具包外壳页（左功能卡片 + 右 iframe）
     lib/client.js                客户端入口：注册左侧栏面板、右侧 tab、会话头 chip、设置页
-    bin/polaris.mjs              运维入口：install / doctor / version（install.ps1 是它的薄壳）
+    bin/polaris.mjs              运维入口：install / doctor / token / version（install.ps1 是它的薄壳）
     bin/slim.mjs                 会话瘦身子进程（L1/L2/L3）
     bin/titles.mjs               会话名扫描子进程（有界读帧）
     install/install.ps1          安装到 %USERPROFILE%\.dsh\profiles\<profile>（注入式 file: 依赖 + pnpm install + 写 bundles）
-    _test/run.mjs                离线自测（假 ctx，把整包挂一遍：路由/工具/设置/面板）
-    test/*.test.mjs              node:test 单测与集成测试（npm test 先跑这一层）
+    _test/all.mjs                跨平台测试入口：枚举 test/*.test.mjs + 冒烟（--coverage 加门槛）
+    _test/run.mjs                离线冒烟（假 ctx，把整包挂一遍：路由/工具/设置/面板）
+    test/*.test.mjs              node:test 单测与集成测试（16 个文件；含 panel.test.mjs 面板 vm 冒烟）
+    test/helpers/harness.mjs     共享脚手架：临时 HOME + 假 ctx + mount()/call()/json()
+    skills/polaris-toolkit/SKILL.md  可安装 skill：能力使用的入口说明
+    docs/known-limits.md         已知限制（匿名读接口、重启生效、预算口径、联邦等 9 条）
+    AGENTS.md                    仓库约定（测试命令、格式地雷、交付动作）
+    .github/workflows/ci.yml     CI：Node 20/22/24 跑 npm test，22 跑覆盖率门槛
 
 ## 3. feature 契约
 
@@ -212,6 +221,16 @@ Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
           POST <p>/api/tasks op=create|update|dispatch|complete|fail|cancel
     明细  GET  <p>/api/detail?session=<id>      目标 / 待办 / 轮次 / 最后一句 / 轨迹
     授权  GET  <p>/api/policy                  { policy, actMode, actLevel, escalation }
+    设置  GET  <p>/api/settings?feature=steward   常用运行期设置（表单用）
+          GET  <p>/api/settings/raw                整份 settings.json（{v,d} 信封）
+          POST <p>/api/settings | /api/settings/raw  表单 patch / 整份替换（同一条校验路径）
+    拍板  GET  <p>/api/approvals + /api/state.agents[].question   审批 + 会话提问合成一条队列
+          POST <p>/api/answer | /api/question/answer   审批答复 / 代答 live root agent 的提问
+    审计  GET  <p>/api/audit[?decision=&cap=&steward=]            intent 级留痕
+          GET  <p>/api/audit/export | /api/journal/export        ndjson 导出
+    追查  GET  <p>/api/trace[?limit=&since=&id=]                 列表 / 单条瀑布（+ 为什么）
+          POST <p>/api/trace/replay                            用同一份事实重放（不执行能力）
+          GET  <p>/api/trace/diff | /api/trace/export | /api/trace/otlp
 
 **任务状态机**：`queued -> assigned -> running -> review -> done / failed / cancelled`。
 `dispatch` 先过策略（`task.dispatch` 需要 L3）与 `actMode`：echo 只把单子写成 `assigned` 并留一句
@@ -227,6 +246,9 @@ Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
     L3  写：派单、开会话、steer、cancel、改设置
 
 默认 L2；未列出的动作一律按 L3 处理（默认收紧）。主人从面板点按钮不受这一层限制——
+（预算口径：`budgetView` 用 `store.chargeOf` 只数真动作——echo 预演、denied、signal、settings、modules、
+route、collect、digest、tool.*、session、chat 免费；escalate / act / slim / notify / 派发与重试才计价。）
+（交办单归档：终态超过 `tasks.retainDays` 的单子在 tick 里裁掉；`brain.js` 的 lastTurns 有上限。）
 这一层只约束总管自己决定的时候。`gate()` 拒绝时只记 debug 日志，由调用方降级。
 
 **升级退役**：`escalation.enabled` 打开后，卡住的 agent 阶梯推进——先 `steer` 问一句卡在哪，
@@ -265,11 +287,15 @@ Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
 - 所有前端请求相对页面 base 解析，不写死 host/port。
 - 外壳轮询只更新左侧卡片；iframe 只在切换功能时换源（否则每 5 秒整页重载）。
 - 面板重绘要有签名守卫（actions 开关状态、行数据），否则每 5 秒丢焦点/收起状态。
+- 写请求校验令牌（fence.js 的 tokenMatches）；**GET 一律匿名**，这是刻意取舍，见 docs/known-limits.md。
+- host 代码装载后不会热更新；面板横幅 / `install.stale` / doctor 的 install-drift 负责把“磁盘比进程新”说出来。
 
 ## 8. 自测
 
     cd D:\agent\polaris-toolkit
-    node _test/run.mjs
+    node _test/all.mjs            # 16 个单测文件 + 冒烟
+    node _test/all.mjs --coverage # 追加覆盖率门槛（Node 22.8+：行 60 / 函数 50 / 分支 50）
+    node bin/polaris.mjs doctor   # 装机体检（含 install-drift 代码漂移）
 
 假 ctx 覆盖 `logger/effect/webServer.register/tools.register/agents/ctx.get`，断言路由数、
 工具名、动作表、设置往返（含 toggle）、面板 HTML 关键片段、404 与围栏行为。

@@ -73,7 +73,8 @@ Heap Guard 做三件事：
             brain.js        编排器：tick 骨架 + 事件桥（判定与动作都在能力平面里）
             http.js         路由表 + agent 工具 + action/status（HTTP 层整体搬出）
             actuators/gated.js  echo/live 闸门（actMode=echo 时只把拟执行动作写进账本）
-            panel.js        金字塔面板（结论 / 待处理 / 控制 / 正在发生 / agent 明细 / 记录 / 维护）
+            panel.js        金字塔面板（结论 / 要我拍板 / 控制 / 设置 / 交办 / 对话 / 正在发生 /
+                            主管 / 能力仓 / 路由 / agent 明细 / 记录 / 审计 / 追查 / 体检 / 维护）
             core/           账本 store、db（sqlite 或 JSON 降级）、schema、approvals、健康采样
             wf/             引擎 engine.js（三段式 / 定时器 / 租约 / 重试 / DLQ；历史 runs 审计仍可读）
             plane/          能力平面：catalog（能力仓）/ instances（首批 22 个）/ preset（内置编制）/
@@ -85,17 +86,24 @@ Heap Guard 做三件事：
             actuators/      notify / prompt / answer 三个动作出口
             channels/       desktop（内存环形）、feishu（lark-cli 子进程）
             federation/     信封 envelope.js（HMAC）与 peer.js（白名单 / 去重 / 心跳）
-      bin/polaris.mjs       运维入口：node bin/polaris.mjs install | doctor | version
+      bin/polaris.mjs       运维入口：node bin/polaris.mjs install | doctor | token | version
       bin/slim.mjs          独立瘦身脚本（子进程运行，可脱离插件单用）
       bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
       docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
       docs/steward-design.md  大内总管团（D-δ）设计：联邦 / 工作流引擎 / 规则 / 会话与轮换
       docs/design-capability-plane.md  能力平面设计（能力=插件、编制=数据、决策树、路由、观测 trace/OTLP）
+      docs/known-limits.md             已知限制清单（匿名读接口 / 重启生效 / 预算口径 / 联邦 等 9 条）
+      AGENTS.md            给下一个改这个仓库的人或 agent 的约定（测试、格式地雷、交付动作）
+      .github/workflows/ci.yml   CI：Node 20/22/24 跑 npm test，22 再跑覆盖率门槛
+      skills/polaris-toolkit/SKILL.md  可安装的 skill：什么时候用哪个工具 / 哪个接口
       install/
         install.ps1         安装到 profile（注入式 file: 依赖 + pnpm install + 写 bundles + 清退旧包）
         uninstall.ps1       卸载（JSON 手术移除依赖/bundles，或 -Restore 还原备份）
-      _test/run.mjs         离线自测（假 ctx，把整个包挂一遍，不连 DSH；node _test/run.mjs）
-      test/*.test.mjs       node:test 单元 / 集成测试（npm test 先跑这一层再跑 _test）
+      _test/all.mjs         跨平台测试入口（枚举 test/*.test.mjs + 冒烟；--coverage 加覆盖率门槛）
+      _test/run.mjs         离线冒烟（假 ctx，把整个包挂一遍，不连 DSH）
+      test/*.test.mjs       node:test 单元 / 集成测试（16 个文件；npm test 跑完再跑冒烟）
+      test/helpers/harness.mjs  共享脚手架：临时 HOME + 假 ctx + mount()/call()/json()
+      test/panel.test.mjs   面板 vm 冒烟（document 垫片 + 真跑内联脚本 + fetch 打到假宿主）
 
 ---
 
@@ -197,27 +205,29 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 
 - 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面，5 秒自刷新（页面隐藏时停）。自上而下按"要不要现在动手"分层：
   1. 结论条：一个字的状态（平稳 / 偏高 / 吃紧，按堆占用 65% / 80% 分档）+ 一句话（几个 agent 在跑、
-     卡住几个、几项等你批、堆多少、预算用掉多少），右边 6 个 KPI（宿主堆带百分比、P99 带 max、
-     agent、流程 / 待批、信号、策略）。
-  2. 需要你处理：待批卡片（同意 / 拒绝 + 过期时间），以及卡住的 agent、critical 信号的点名行；没有就一行灰字。
+  2. 要我拍板：审批卡片（同意 / 拒绝 + 过期时间）与“会话正在等你回答”的提问卡（问题原文 + 选项 + 代答）
+     合成一条队列；顶上还有卡住的 agent、critical 信号的点名行；空时一行灰字。需要人点头的事只有这一处。
   3. 控制：自动动作 / act echo-live / 飞书通知 / 飞书文档 / 立即汇报——这几个按钮改的是它下一步怎么动。
-  4. 交办：一句话 + 验收标准 + 派给谁（新开会话或某个已有会话）→ 建单；下面按状态排队列，
+  4. 设置：常用运行期设置的表单（actLevel、预算、升级退役、交办、通知、分类器、导出、会话），保存立即生效；
+     “打开 settings.json 全文”跳到外壳里的原始 JSON 编辑器（整份文档编辑，保存前按各 feature schema 校验）。
+  5. 交办：一句话 + 验收标准 + 派给谁（新开会话或某个已有会话）→ 建单；下面按状态排队列，
      每单可直接派发 / 完成 / 失败 / 取消。
-  5. 对话：主管会话的正文（你 / 主管 / 工具 / 系统四种行），底部输入框回车即发；可新建主管会话、
-     绑定已有会话、解绑。这就是"跟总管说话"的入口，和原生会话里打字等价。
-  6. 正在发生：在跑的工作流表，下面模块卡片（按 agent 数降序、未归类沉底、带占比条）。
-  7. 主管：内置编制的开关、决策树编辑、装备列表；可新增 / 删除 / 恢复默认。
-  8. 能力仓：`api/catalog` 的能力清单（载荷 / 载体 / 授权 / 被谁装备），可按载荷 / 载体 / 关键字过滤，
+  6. 对话：主管会话的正文（你 / 主管 / 工具 / 系统四种行），底部输入框回车即发；可新建主管会话、
+     绑定已有会话、解绑。这就是“跟总管说话”的入口，和原生会话里打字等价。
+  7. 正在发生：在跑的工作流表，下面模块卡片（按 agent 数降序、未归类沉底、带占比条）。
+  8. 主管：内置编制的开关、决策树编辑、装备列表；可新增 / 删除 / 恢复默认。
+  9. 能力仓：`api/catalog` 的能力清单（载荷 / 载体 / 授权 / 被谁装备），可按载荷 / 载体 / 关键字过滤，
      也能把片段（plan.*）插进某个主管的树。
-  9. 路由：编制 × 能力 × 目标 的 allow / approval / deny 三态格，点一格循环切换（inherit 清除例外）。
-  10. Agent 明细：卡住 → 待决 → 运行中 → 空闲排序，同类按最近活动；列是会话名 / 模块 / 状态 / 静默 /
-     轮次 / 目标 / 工作目录 / 归属依据 / 看 / 重判。「看」打开右侧抽屉：目标、待办进度、轮次、
-     最后活动、最后一句、12 条人话轨迹（读的是该会话真实的 goal/change、todo/write、turn/end 事件）。
-  11. 记录：echo 拟执行 + 信号流。
-  12. 审计：intent 级留痕（谁、哪个能力、什么决定、为什么），可导出 ndjson（审计 / 流水）。
-  13. 追查：trace 列表（触发 / 编制 / 主体 / 状态 / span 数 / 耗时）；点「瀑布」看调用链与「为什么」
+  10. 路由：编制 × 能力 × 目标 的 allow / approval / deny 三态格，点一格循环切换（inherit 清除例外）。
+  11. Agent 明细：卡住 → 待决 → 运行中 → 空闲排序，同类按最近活动；列是会话名 / 模块 / 状态 / 静默 /
+      轮次 / 目标 / 工作目录 / 归属依据 / 看 / 重判。「看」打开右侧抽屉：目标、待办进度、轮次、
+      最后活动、最后一句、12 条人话轨迹（读的是该会话真实的 goal/change、todo/write、turn/end 事件）。
+  12. 记录：echo 拟执行 + 信号流。
+  13. 审计：intent 级留痕（谁、哪个能力、什么决定、为什么），可导出 ndjson（审计 / 流水）。
+  14. 追查：trace 列表（触发 / 编制 / 主体 / 状态 / span 数 / 耗时）；点「瀑布」看调用链与「为什么」
       （事实 → 表达式 → 分支 → 授权 → 回执）；可重放 / 钉住 / 导出 / 导出 OTLP。
-  14. 体检：9 条自动归因（路由被拒 / 未授权 / 无通道 / 卡住 / 预算耗尽 / 能力失败 / 主管静默 /
+  15. 体检：9 条自动归因（路由被拒 / 未授权 / 无通道 / 卡住 / 预算耗尽 / 能力失败 / 主管静默 /
+      死分支 / 噪声分支），每条只给结论和入口。
       死分支 / 噪声分支），每条只给结论和入口。
   维护：折叠区，强制采样 / 按 agent 判断归类 / 重载能力 / 刷新，加上页脚（journal / 能力 hash / 降级 / export）。
 - 观察：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、
@@ -297,7 +307,8 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 
 ## 5. 工具（agent 侧）
 
-装了插件后，工具会注册进 DSH 的工具表，agent 也可以直接调用：
+装了插件后，这 15 个工具会注册进 DSH 的工具表，agent 可以直接调用（agent 侧免令牌；
+HTTP 写接口才需要 x-polaris-token）：
 
 | 工具 | 作用 |
 | --- | --- |
@@ -310,6 +321,12 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 | steward_begin | 手工拉起一个工作流（workflow / subject / text / vars），返回 run id 与状态 |
 | steward_report | 向主人上报一段文本（title / level），走 notify 通道并记账 |
 | steward_ask | 发起一次请示（title / detail / subject / ttlMs），返回审批 id；等主人在面板或飞书答复 |
+| steward_trace | 看能力平面的决策轨迹：列表（limit / since）或某条 trace 的瀑布（span + intent + effect）；replay:true 用同一份事实重放，export 导出 jsonl |
+| steward_audit | 每条能力意图的审计：谁想对谁做什么、执行 / 预演 / 被拒、为什么；可按 decision / cap / steward 过滤 |
+| steward_tasks | 交办：op=create（title + brief + acceptance + target）/ list / dispatch / complete / fail / cancel / archive |
+| steward_stewards | 主管编制：op=list / save / delete（它装哪些能力、听哪些事件、决策树长什么样） |
+| steward_chat | 和主管会话对话：op=status / bind / unbind / create / send（send 把消息 followup 进那条会话） |
+| steward_settings | 读写控制主管的设置：op=get / set（走 schema 校验）/ raw（整份文档）/ replace；与面板、HTTP 共用同一条落盘路径 |
 
 ---
 
@@ -364,6 +381,17 @@ steward 的运行期设置（settings.json 的 `steward` 节，面板控制条�
     export: { prometheus: true, intervalSec: 60,
               otlp: { enabled: false, endpoint: "", headers: {} } }
     modules: [...] / pins: {...}
+
+设置控制面有三条等价入口，都走同一套深合并 + settingsSchema 校验 + 落盘：面板「设置」表单（常用字段）、
+外壳的 settings.json 全文编辑器（整份文档，`{v,d}` 信封）、agent 工具 `steward_settings`。非法值一律拒绝且
+不落盘，所以“改坏了”不会发生。
+
+两个容易误解的口径：
+
+- `budgetPerHour` **只数真动作**：`echo` 预演、`denied`、`signal`、`settings`、`modules`、`route`、`collect`、
+  `digest`、`tool.*`、`session`、`chat` 都不计价，`escalate` / `act` / `slim` / `notify` / 派发与重试才算；
+  单条账本可用 `action.charge` 显式覆盖。
+- `tasks.retainDays` 控制交办单归档：终态（done / failed / cancelled）超过保留期的单子会在 tick 里被裁掉。
 
 面板上可改的运行期设置（settings.json，改完立即生效）：
 autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、maxPerClick（每轮上限）。
@@ -483,9 +511,14 @@ steward 的导出（/__polaris/steward/metrics、OTLP）复用同一份快照，
 - **不要双重挂载**：包既然在 dsh.profile.bundles 里，cordis.patch.yml 就不要再为它写 insert；
   两条挂载 = 两条 /__polaris 路由 = 整个 feature 树挂载失败。
 - **只能在重启后生效**：host 半边没有热加载（除非 profile 里装了 hmr）。
+- **运行态可能比磁盘旧**：改了 lib/** 但不重启，跑的还是旧代码。面板会弹琥珀横幅、`install.stale` 会变 true、
+  `node bin/polaris.mjs doctor` 的 install-drift 检查会告警（都是比较“源码 mtime / install.json 时间 vs 进程启动时间”）。
 - **`dsh --profile desktop` 被拒**：desktop profile 由 Electron 应用独占管理，
   想验证组合结果只能在重启后看 Settings -> Plugins。
 - **fence**：插件 HTTP 接口要求可信 Host 头（同源转发）；直接跨域 fetch 会被 403。
+- **GET 读接口匿名**：写请求要 `x-polaris-token`，但读接口只要 Host 头可信就放行——本机任意进程都能读到
+  会话正文（`/api/chat`、`/api/detail`）与审计。这是刻意取舍（便于排障、可无令牌换机器查看），
+  完整清单与收紧方法见 [docs/known-limits.md](docs/known-limits.md)。
 - **瘦身不是万能**：它减少的是"下次读进堆"的字节；已经加载在堆里的会话，除非重启，
   插件无法释放（DSH 没有空闲卸载路径）。真正的大头建议反馈上游：
   idle session unload/LRU、session/close 命令、裁剪 Session.log/eventsSnapshot、宿主加 --expose-gc。
@@ -495,6 +528,8 @@ steward 的导出（/__polaris/steward/metrics、OTLP）复用同一份快照，
 - **能力与编制都是 JSON 数据不是代码**：装一个能力 = 往实例表加一条记录，改一个主管 = 改它的装备与决策树，
   都不用动管家代码；expr / tree 载体是自研确定性求值器，不 eval、不 Function。
 - **等级阈值是按进程上限算的**：如果给宿主加了 --max-old-space-size=8192，
+- **回归网**：`npm test`（= `node _test/all.mjs`）跑 16 个单测文件 + 假宿主冒烟，CI 在 Node 20/22/24 上跑同一条命令；
+  面板改动由 `test/panel.test.mjs` 用 vm 真跑一遍内联脚本兜底。改代码前先读 [AGENTS.md](AGENTS.md)。
   上限定为 8192，阈值相应变成 4915/6144/6963 MB。
 
 ---

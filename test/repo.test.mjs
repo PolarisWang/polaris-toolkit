@@ -1,0 +1,51 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+/**
+ * 仓库约定守卫（评审 P2-C）：文档、CI、测试入口这三样最容易"写完就漂"，
+ * 这里让它们进回归网——改名/删文件会直接红。
+ */
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const read = (rel) => fs.readFileSync(path.join(root, rel), "utf8");
+
+test("repo: test entry, CI and docs stay wired together", () => {
+  const pkg = JSON.parse(read("package.json"));
+  assert.equal(pkg.scripts.test, "node _test/all.mjs");
+  assert.equal(pkg.scripts["test:coverage"], "node _test/all.mjs --coverage");
+  assert.ok(fs.existsSync(path.join(root, "_test/all.mjs")), "_test/all.mjs exists");
+
+  const ci = read(".github/workflows/ci.yml");
+  assert.match(ci, /npm test/);
+  assert.match(ci, /test:coverage/);
+  assert.match(ci, /matrix:/);
+
+  for (const rel of ["AGENTS.md", "docs/known-limits.md", "skills/polaris-toolkit/SKILL.md", "docs/design-capability-plane.md"]) {
+    assert.ok(fs.statSync(path.join(root, rel)).size > 500, rel + " has content");
+  }
+  // README 是 CRLF，按行读，别用 \n 拼的锚点。
+  const readme = read("README.md");
+  assert.ok(readme.includes("docs/known-limits.md"), "README links known-limits");
+  assert.ok(readme.includes("AGENTS.md"), "README links AGENTS.md");
+  assert.ok(fs.existsSync(path.join(root, "test/helpers/harness.mjs")));
+  // CI 声明的 Node 版本要覆盖 engines 的下限。
+  assert.match(ci, /"20"/);
+});
+
+test("repo: agents guidance keeps the load-bearing rules", () => {
+  const agents = read("AGENTS.md");
+  for (const needle of ["additionalProperties", "UTF-8 with BOM", "GLOBAL_FNS", "CRLF", "chargeOf", "_test/all.mjs"]) {
+    assert.ok(agents.includes(needle), "AGENTS.md mentions " + needle);
+  }
+  const skill = read("skills/polaris-toolkit/SKILL.md");
+  assert.match(skill, /^---\nname: polaris-toolkit\n/);
+  for (const needle of ["steward_trace", "steward_settings", "x-polaris-token", "no-model-route"]) {
+    assert.ok(skill.includes(needle), "SKILL.md mentions " + needle);
+  }
+  const limits = read("docs/known-limits.md");
+  for (const needle of ["匿名", "重启", "chargeOf", "node:sqlite"]) {
+    assert.ok(limits.includes(needle), "known-limits mentions " + needle);
+  }
+});
