@@ -49,19 +49,22 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
     lib/core/zstd.js             拼接式 zstd 容器按帧读取（解析帧头/解压）
     lib/features/index.js        FEATURES 登记表（新增功能只改这里 + 新目录）
     lib/features/heap-guard/     首个功能（宿主逻辑、面板 HTML、采样器、瘦身、快照、bili、会话名）
-    lib/features/steward/        大内总管（详见 steward-design.md）
+    lib/features/steward/        大内总管（详见 steward-design.md 与 design-capability-plane.md）
       index.js                   只做装配（约 300 行）：全部构造都包 attempt，失败只降级、不抛
       config.js                  Config/settings/settingsSchema/normalize/readSettings
-      state.js                   只读视图；metrics.js 指标发布；brain.js 规则->工作流 + tick
+      state.js                   只读视图；metrics.js 指标发布；brain.js 编排器（tick 骨架 + 事件桥）
       http.js                    路由表 + 5 个 agent 工具 + action/status
       policy.js                  分级授权：actLevel L1/L2/L3 与动作需求表（gate 只记日志不抛）
       tasks.js                   交办队列：tasks 表状态机 + 派单（prompt 幂等）+ tick 补槽 + turn/end 转 review
       actuators/gated.js         echo/live 闸门（echo 只把拟执行动作写进账本）
-      panel.js                   金字塔面板：结论 / 待处理 / 控制 / 交办 / 对话 / 正在发生 /
-                                 agent 明细 / 记录 / 维护
+      panel.js                   金字塔面板：结论 / 待处理 / 控制 / 交办 / 对话 / 正在发生 / 主管 /
+                                 能力仓 / 路由 / agent 明细 / 记录 / 审计 / 追查 / 体检 / 维护
       core/{store,db,schema,approvals,bus,health}.js  账本 + 12 表（sqlite 或 JSON 降级）+ 审批
-      wf/{engine,defs}.js        持久工作流引擎与 5 个内置流程
-      rules/{expr,loader,evaluator}.js + builtin/*.json  确定性规则与 13 条内置规则
+      wf/engine.js               持久工作流引擎（原 5 个内置流程已 1:1 迁成片段能力 plan.*）
+      plane/{catalog,instances,preset,tree,expr,carriers,pipeline,grants,mount}.js
+                                 能力平面：能力仓 / 首批 22 条实例 / 内置编制 / 决策树 / 表达式载体 /
+                                 载体适配 / 裁决管线 / 授权映射 / 装配；lib/core/trace.js 存 trace/span/
+                                 effect/intent 并映射 OTLP
       session/{rollup,pressure,handoff,bootstrap}.js    汇总 / 轮换 / 交接 / 会话绑定
       session/{events,chat,detail}.js                  事件读取（4s 缓存）/ 主管会话（建-绑-发-回放）/
                                                       会话明细折叠（目标、待办、轨迹）
@@ -180,13 +183,20 @@ Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
 
     hero       一个字状态 + 一句话结论 + 6 个 KPI（堆%、P99、agent、流程/待批、信号、策略）
     待处理     待批卡片 + 卡住的 agent / critical 信号点名（空则一行灰字）
-    控制       自动动作 / act echo-live / 飞书 / 立即汇报
+    控制       自动动作 / act echo-live / 飞书 IM / 飞书文档 / 立即汇报
     交办       一句话 + 验收标准 + 派给谁 -> 建单；下面按状态排队列 + 派发/完成/失败/取消
     对话       主管会话正文（你 / 主管 / 工具 / 系统）+ 输入框；新建 / 绑定 / 解绑
     正在发生   工作流表 + 模块卡片（按 agent 数降序、未归类沉底、占比条）
+    主管       编制开关 / 决策树编辑 / 装备列表；新增 / 删除 / 恢复默认
+    能力仓     能力清单（载荷 / 载体 / 授权 / 被谁装备）+ 过滤 + 片段插入
+    路由       编制 x 能力 x 目标 的 allow / approval / deny 三态格（inherit 清例外）
     agent 表   卡住 -> 待决 -> 运行中 -> 空闲，同类按最近活动；行尾「看」开详情抽屉
     记录       echo 拟执行 + 信号流
-    维护       折叠：强制采样 / 归类 / 重载规则 / 刷新 + 页脚
+    审计       intent 级留痕 + ndjson 导出（审计 / 流水）
+    追查       trace 列表 + 瀑布 / 为什么 / 重放 / 钉住 / 导出 / 导出 OTLP
+    体检       9 条自动归因（路由被拒 / 未授权 / 无通道 / 卡住 / 预算耗尽 / 能力失败 /
+               主管静默 / 死分支 / 噪声分支），只给结论和入口
+    维护       折叠：强制采样 / 归类 / 重载能力 / 刷新 + 页脚
 
 ## 6.5 指挥台：对话、交办、明细、分级授权
 
@@ -213,7 +223,7 @@ Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
 **分级授权**（`policy.js`）：`actMode` 是最外层"要不要真的动"，`actLevel` 是内层"总管自己能动到哪"。
 
     L1  只通知                       notify.send / digest.send
-    L2  只读与低危                   collect / slim / rules.reload / task.create
+    L2  只读与低危                   collect / slim / reload 能力 / task.create
     L3  写：派单、开会话、steer、cancel、改设置
 
 默认 L2；未列出的动作一律按 L3 处理（默认收紧）。主人从面板点按钮不受这一层限制——
@@ -222,6 +232,29 @@ Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
 **升级退役**：`escalation.enabled` 打开后，卡住的 agent 阶梯推进——先 `steer` 问一句卡在哪，
 冷却（默认 600 秒）后 `cancel`，仍不动则只报警一次；每步都先过 `actLevel` 与 `actMode`。
 
+
+## 6.6 能力平面（capability plane）
+
+**能力 = 数据，主管 = 数据，决策 = 主管自己的树**。装什么能力就有什么职责，没有 role 字段。
+
+    能力仓  GET  <p>/api/catalog            { capabilities, usedBy, byPayload, byCarrier, hash }
+            GET  <p>/api/tree/snippets      plan.* 片段（可插进树里）
+            POST <p>/api/tree/validate      { steward } -> { valid, errors }（坏树也返回 200）
+    主管    GET  <p>/api/stewards            { stewards, matrix }
+            POST <p>/api/stewards           op=save|delete|enable|reset
+    路由    GET  <p>/api/routes             三态矩阵（allow / approval / deny）
+            POST <p>/api/routes             op=cell { steward, cap, target, route }（inherit 清例外）
+    体检    GET  <p>/api/doctor             9 条自动归因（症状 -> 结论 -> 入口）
+    观测    GET  <p>/api/audit[?cap=&decision=&steward=&since=]   intent 级审计（ndjson 导出）
+            GET  <p>/api/trace[?limit=&since=&steward=&trigger=]  trace 列表
+            GET  <p>/api/trace?id=<id>      瀑布 + 为什么 + intents
+            POST <p>/api/trace/replay       用事实快照重跑树（不执行能力）
+            GET  <p>/api/trace/diff         同一 subject 的最近两条 trace 对比
+            GET  <p>/api/trace/otlp         OTLP resourceSpans（sha1 id + unix nanos）
+
+裁决顺序固定在 `plane/pipeline.js`：人工在场 -> 作用域 -> 路由矩阵 -> 授权 -> 幂等 -> 预算 -> 冷却 ->
+预演；每一步都落 intent/span，被拒的意图也入库。新增载体（lark.doc / file / llm / task）只是
+`plane/carriers.js` 里多一个适配器 + `plane/instances.js` 里多一条实例，**不改主管与编排器代码**。
 
 ## 7. 硬约束
 

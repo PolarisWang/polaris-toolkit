@@ -1,7 +1,7 @@
 # Polaris Toolkit
 
 一个 DSH（DeepSeek Harness）**多功能工具包**插件。Polaris Toolkit 是入口包，
-下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制）与 **Steward**（大内总管：观察全部 agent、归类到模块、规则命中后走持久工作流，动作/审批/上报全链路；设计见 [docs/steward-design.md](docs/steward-design.md)），
+下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制）与 **Steward**（大内总管：观察全部 agent、归类到模块、能力平面判定命中后由该主管的决策树决定动作，动作/审批/上报全链路；设计见 [docs/steward-design.md](docs/steward-design.md)），
 后续新增功能只加 feature，不动入口。
 
 - 入口：左侧栏 **Polaris Toolkit**（右侧栏 tab 暂未使用，见"设计取舍"）
@@ -65,18 +65,22 @@ Heap Guard 做三件事：
             snapshot.js     写 V8 堆快照与轮转
             bili.js         bili 配置读写与预算调整
             titles.js       会话名缓存（子进程扫描 + mtime/size 校验 + 内存标题）
-          steward/          大内总管：观察 / 规则 / 持久工作流 / 审批 / 联邦
+          steward/          大内总管：观察 / 能力平面（能力·编制·树·路由·trace） / 审批 / 联邦
             index.js        只做装配（约 300 行）：构造 + attempt 降级 + dispose
             config.js       Config / settings / settingsSchema / normalize / readSettings
             state.js        只读视图（state/modules/agents/budget/runs/approvals）
             metrics.js      15 条 polaris_steward_* gauge + 每模块 gauge + 统计缓存
-            brain.js        规则 -> 工作流（fire/evaluate*/tick + 事件桥 + heap/critical 订阅）
+            brain.js        编排器：tick 骨架 + 事件桥（判定与动作都在能力平面里）
             http.js         路由表 + agent 工具 + action/status（HTTP 层整体搬出）
             actuators/gated.js  echo/live 闸门（actMode=echo 时只把拟执行动作写进账本）
             panel.js        金字塔面板（结论 / 待处理 / 控制 / 正在发生 / agent 明细 / 记录 / 维护）
             core/           账本 store、db（sqlite 或 JSON 降级）、schema、approvals、健康采样
-            wf/             引擎 engine.js（三段式 / 定时器 / 租约 / 重试 / DLQ）与内置流程 defs.js
-            rules/          表达式求值 expr.js、加载 loader.js、求值 evaluator.js、builtin/*.json
+            wf/             引擎 engine.js（三段式 / 定时器 / 租约 / 重试 / DLQ；历史 runs 审计仍可读）
+            plane/          能力平面：catalog（能力仓）/ instances（首批 22 个）/ preset（内置编制）/
+                            tree（决策树）/ expr（表达式载体）/ carriers（载体适配）/ pipeline（裁决管线）/
+                            grants（授权映射）/ mount（装配）
+            policy.js       分级授权 actLevel 的 NEEDS 表
+            trace 表         见 lib/core/trace.js：trace/span/effect/intent + OTLP 映射
             session/        rollup、pressure（自适应轮换）、handoff、bootstrap（会话绑定）
             actuators/      notify / prompt / answer 三个动作出口
             channels/       desktop（内存环形）、feishu（lark-cli 子进程）
@@ -86,6 +90,7 @@ Heap Guard 做三件事：
       bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
       docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
       docs/steward-design.md  大内总管团（D-δ）设计：联邦 / 工作流引擎 / 规则 / 会话与轮换
+      docs/design-capability-plane.md  能力平面设计（能力=插件、编制=数据、决策树、路由、观测 trace/OTLP）
       install/
         install.ps1         安装到 profile（注入式 file: 依赖 + pnpm install + 写 bundles + 清退旧包）
         uninstall.ps1       卸载（JSON 手术移除依赖/bundles，或 -Restore 还原备份）
@@ -187,7 +192,7 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 
 ## 4.5 Steward（大内总管）
 
-一条链：**观察 → 归类 → 规则 → 持久工作流 → 动作 / 审批 / 上报**。默认是"只通知"（L1），
+一条链：**观察 → 归类 → 能力判定 → 该主管的决策树 → 动作 / 审批 / 上报**。默认是"只通知"（L1），
 任何真正的副作用都要显式打开。设计依据见 [docs/steward-design.md](docs/steward-design.md)。
 
 - 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面，5 秒自刷新（页面隐藏时停）。自上而下按"要不要现在动手"分层：
@@ -195,17 +200,26 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
      卡住几个、几项等你批、堆多少、预算用掉多少），右边 6 个 KPI（宿主堆带百分比、P99 带 max、
      agent、流程 / 待批、信号、策略）。
   2. 需要你处理：待批卡片（同意 / 拒绝 + 过期时间），以及卡住的 agent、critical 信号的点名行；没有就一行灰字。
-  3. 控制：自动动作 / act echo-live / 飞书通知 / 立即汇报——这四个按钮改的是它下一步怎么动。
+  3. 控制：自动动作 / act echo-live / 飞书通知 / 飞书文档 / 立即汇报——这几个按钮改的是它下一步怎么动。
   4. 交办：一句话 + 验收标准 + 派给谁（新开会话或某个已有会话）→ 建单；下面按状态排队列，
      每单可直接派发 / 完成 / 失败 / 取消。
   5. 对话：主管会话的正文（你 / 主管 / 工具 / 系统四种行），底部输入框回车即发；可新建主管会话、
      绑定已有会话、解绑。这就是"跟总管说话"的入口，和原生会话里打字等价。
   6. 正在发生：在跑的工作流表，下面模块卡片（按 agent 数降序、未归类沉底、带占比条）。
-  7. Agent 明细：卡住 → 待决 → 运行中 → 空闲排序，同类按最近活动；列是会话名 / 模块 / 状态 / 静默 /
+  7. 主管：内置编制的开关、决策树编辑、装备列表；可新增 / 删除 / 恢复默认。
+  8. 能力仓：`api/catalog` 的能力清单（载荷 / 载体 / 授权 / 被谁装备），可按载荷 / 载体 / 关键字过滤，
+     也能把片段（plan.*）插进某个主管的树。
+  9. 路由：编制 × 能力 × 目标 的 allow / approval / deny 三态格，点一格循环切换（inherit 清除例外）。
+  10. Agent 明细：卡住 → 待决 → 运行中 → 空闲排序，同类按最近活动；列是会话名 / 模块 / 状态 / 静默 /
      轮次 / 目标 / 工作目录 / 归属依据 / 看 / 重判。「看」打开右侧抽屉：目标、待办进度、轮次、
      最后活动、最后一句、12 条人话轨迹（读的是该会话真实的 goal/change、todo/write、turn/end 事件）。
-  8. 记录：echo 拟执行 + 信号流。
-  9. 维护：折叠区，强制采样 / 按 agent 判断归类 / 重载规则 / 刷新，加上页脚（journal / 规则 hash / 降级 / export）。
+  11. 记录：echo 拟执行 + 信号流。
+  12. 审计：intent 级留痕（谁、哪个能力、什么决定、为什么），可导出 ndjson（审计 / 流水）。
+  13. 追查：trace 列表（触发 / 编制 / 主体 / 状态 / span 数 / 耗时）；点「瀑布」看调用链与「为什么」
+      （事实 → 表达式 → 分支 → 授权 → 回执）；可重放 / 钉住 / 导出 / 导出 OTLP。
+  14. 体检：9 条自动归因（路由被拒 / 未授权 / 无通道 / 卡住 / 预算耗尽 / 能力失败 / 主管静默 /
+      死分支 / 噪声分支），每条只给结论和入口。
+  维护：折叠区，强制采样 / 按 agent 判断归类 / 重载能力 / 刷新，加上页脚（journal / 能力 hash / 降级 / export）。
 - 观察：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、
   `session/created|disposed|event|title` 共 13 类事件，外加每 5 秒 `ctx.agents.list()` 对账
   （宿主只在状态变化时发事件，卡死的 running 不会自己发）；running 且 8 分钟无事件 → `stalled`。
@@ -235,29 +249,36 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 - 明细抽屉：`GET api/detail?session=<id>` 读该会话事件，折出目标 / 待办进度 / 轮次 / 最后一句 / 轨迹；
   缓存 4 秒（事件）与 20 秒（详情），面板只在打开抽屉时读，不参与 5 秒轮询。
 - 分级授权：`actLevel` 是"总管自己能动手到哪一层"的内层闸门，与 `actMode` 正交：
-  L1 只通知；L2 允许只读/低危动作（collect、slim、reload rules、建单）；L3 才允许写（派单、开会话、
+  L1 只通知；L2 允许只读/低危动作（collect、slim、reload 能力、建单）；L3 才允许写（派单、开会话、
   steer、cancel、改设置）。默认 L2，`GET api/policy` 会列出当前 allows / denies。主人点按钮不受限，
   它自己决定时才查这一层。
 - 升级退役：`escalation.enabled` 打开后，卡住的 agent 按阶梯处理——先 steer 问一句卡在哪，冷却后再
   cancel，仍不动就只报警一次；每次动作都过 `actLevel` 与 `actMode` 两道闸，冷却默认 600 秒。
-- 规则：13 条内置规则（`lib/features/steward/rules/builtin/{agents,system,social}.json`），
-  字段 `id/version/when/if/actions/cooldownSec/severity/enabledByDefault/params`；表达式是自研的
-  确定性求值器（不 eval、不 Function）。用户覆盖放 `~/.dsh/polaris-toolkit/rules/overrides/*.json`
-  （可禁用、调参、新增），`POST api/rules/reload` 热重载；`rulesHash`（sha256 前 16 位）用于联邦漂移检测。
+- 能力平面（取代旧的 rules/ 与 wf/defs.js）：**能力 = 插件数据**（`plane/instances.js` 首批 22 条：
+  6 个判定 judge.*（expr 载体，只回 {hit, level, reason, evidence}）、6 个动作（ask.owner / steer.session /
+  cancel.session / slim.host / report.digest / record.journal）、5 个片段 plan.*（tree 载体，树里 call 别的
+  能力）、2 个通知，加上 P3 的 record.larkdoc / assign.task / summarize.llm）。**主管 = 编制数据**
+  （`plane/preset.js` 内置「堆守望」+「会话守望」；没有 role 字段，装备了什么能力就有什么职责）。
+  **决策只有一处**：主管自己的决策树（`plane/tree.js`，保存期校验未知装备与形状）；能力只提供可插入的
+  片段，运行时不回看。`plane/pipeline.js` 按固定顺序裁决：人工在场 → 作用域 → 路由矩阵 → 授权 → 幂等 →
+  预算 → 冷却 → 预演，每一步都落 intent/span。控制面是 `api/catalog`、`api/stewards`、`api/routes`、
+  `api/tree/snippets|validate`；`POST api/rules/reload`（历史命名）＝重读实例表与编制，hash 是 `plane-<hex>`。
 - 工作流引擎：`node:sqlite`（宿主裁剪了 sqlite 时自动降级成 JSON 快照 + ops 重放），12 张表；
   副作用走 intent → effect → result 三段式，幂等键落在 `actions.idem_key`，崩在中间的行由恢复钩子结算；
   step 支持 wait/branch/parallel/judge/remote/compensate；单最小堆定时器 + 1 秒 tick，`wake_at` 落库；
   同一 subject 用租约串行；失败指数退避，超限进 DLQ；`shadow` run 只记账不执行；面板可重放。
-- 内置流程：`wf.notify`（发通知）、`wf.ask`（开审批 + 等答复 / 到期作废）、`wf.agent.stall`、
-  `wf.host.protect`、`wf.digest`（汇总近期态势）。
+- 片段能力：`plan.notify` / `plan.ask` / `plan.agent.stall` / `plan.host.protect` / `plan.digest`
+  （原 5 个工作流 1:1 迁移，在 `plane/instances.js` 里是树形数据）。
 - 动作分档：默认 L1 只通知。`autoAct` 打开后，`actions.stallSteer` / `actions.heapSlim` 还要各自打开
   才会真的 steer 会话或瘦身（瘦身走 heap-guard 的同一个动作，失败只记降级）。
-- 动作有两挡：`actMode="echo"`（默认）下规则照常求值，但通知 / 投递 followup / 代答提问都只把
+- 动作有两挡：`actMode="echo"`（默认）下判定照常求值，但通知 / 投递 followup / 代答提问都只把
   message 打出来（面板"拟执行"卡片 + `actions` 里 `kind:"echo"`），不产生任何副作用；主人看过 ack 之后
   把 `actMode` 切到 `live`（面板按钮会二次确认）才真正执行。`autoAct` 与 `actMode` 是两道独立的闸。
 - 指标出口：`GET /__polaris/steward/metrics` 输出 Prometheus 文本（堆、P99、崩溃数、agent/模块计数、
   运行与待批、预算、信号、事件、标题缓存）；`export.otlp.enabled=true` 时按 `intervalSec` 把同一份
   指标 POST 到 `<endpoint>/v1/metrics`（resource attributes: service.name=polaris-toolkit）。
+- trace / OTLP：`GET /__polaris/steward/api/trace/otlp` 把 trace/span 映射成标准 OTLP JSON
+  （sha1 截断 id、unix nanos 时间、attributes 带 trigger/steward/subject），与指标共享服务名，可直接喂 OTLP 后端。
 - 审批：`POST api/answer {id, answer, version}` 带版本 CAS，两个端同时点只有一个生效；到期自动作废。
 - 上报：desktop 通道（内存环形 200 条）永远可用；飞书走本机 `lark-cli`
   （`notify.larkEnabled=true` 才启用，`notify.minSeverity` 默认 warning）。
@@ -285,7 +306,7 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 | heap_snapshot | 写一份 V8 堆快照并返回路径 |
 | heap_bili | 读/写 bili 预算（max、residentMaxMB、warmMax、warmMaxBytes、gc.enabled） |
 | steward_observe | 只读快照：每个 agent 的模块归属 / 状态 / 静默时长 / 待答提问 / 最新信号 / 运行流程 / 待批 |
-| steward_status | 总管自身的运行状态：规则数 + hash、求值次数、工作流统计、待批、预算、通知通道、联邦、降级项 |
+| steward_status | 总管自身的运行状态：能力数 + hash、编制数、trace/effect 计数、工作流统计、待批、预算、通知通道、联邦、降级项 |
 | steward_begin | 手工拉起一个工作流（workflow / subject / text / vars），返回 run id 与状态 |
 | steward_report | 向主人上报一段文本（title / level），走 notify 通道并记账 |
 | steward_ask | 发起一次请示（title / detail / subject / ttlMs），返回审批 id；等主人在面板或飞书答复 |
@@ -378,7 +399,7 @@ settingsSchema（schemastery）整体校验，非法值直接 400 `invalid-setti
     features/heap-guard/titles.json   会话名缓存（按会话 id，带 mtime/size 校验）
     features/steward/journal-YYYYMMDD.jsonl  总管观察日志（按天滚动，可重放重建内存索引）
     features/steward/steward.db      总管库（node:sqlite；裁剪环境下降级为 steward.db.json + steward.ops.jsonl）
-    features/steward/rules/overrides/ 规则覆盖（*.json，改完 POST api/rules/reload）
+    features/steward/plane-*.jsonl    file 载体的落盘（record.* 的流水记录）
     features/steward/slim-backup-*   被 wf.host.protect 触发瘦身时的原文件备份
 
 启动时会做一次保留期清理：journal-YYYYMMDD.jsonl 保留 30 天，samples.csv 保留 14 天且最多 2 万行。
@@ -471,7 +492,8 @@ steward 的导出（/__polaris/steward/metrics、OTLP）复用同一份快照，
 - **总管只在一个进程里写**：agent 只存在于一台机的宿主进程，所以"谁管它"是物理事实，不需要选主；
   幂等键 + 版本 CAS 覆盖了重复动作与双端审批这两个真实冲突面。
 - **联邦默认关**：secret 不填就不建 peer、不收 envelope；跨机只交换摘要与审批，原始日志不出本机。
-- **规则是 JSON 不是 YAML**：不为规则格式引第三方解析器，overrides 也走 JSON。
+- **能力与编制都是 JSON 数据不是代码**：装一个能力 = 往实例表加一条记录，改一个主管 = 改它的装备与决策树，
+  都不用动管家代码；expr / tree 载体是自研确定性求值器，不 eval、不 Function。
 - **等级阈值是按进程上限算的**：如果给宿主加了 --max-old-space-size=8192，
   上限定为 8192，阈值相应变成 4915/6144/6963 MB。
 

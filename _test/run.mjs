@@ -378,6 +378,44 @@ assert.ok(Array.isArray(j1.entries) && j1.entries.length > 0, "journal entries")
 const j2 = await json(await call(steward, "GET", "/__polaris/steward/api/journal?since=" + j1.latest));
 assert.ok(j2.entries.every((e) => e.seq > j1.latest), "only entries past the cursor");
 
+// 13f. P2 control surface: catalog, route cells, snippets/validate, audit and exports
+const cat = await json(await call(steward, "GET", "/__polaris/steward/api/catalog"));
+assert.equal(cat.ok, true, "catalog answers");
+assert.ok(cat.count >= 19 && String(cat.hash).startsWith("plane-"), "catalog hash and count");
+const planCap = cat.capabilities.filter((c) => c.payload === "plan")[0];
+assert.ok(planCap && planCap.plan, "plan capability carries its snippet tree");
+assert.ok(Array.isArray(planCap.usedBy), "capability names its equip owners");
+const snips = await json(await call(steward, "GET", "/__polaris/steward/api/tree/snippets"));
+assert.ok(snips.snippets.length >= 5, "snippet palette");
+const tv = await json(await call(steward, "POST", "/__polaris/steward/api/tree/validate", { steward: { id: "cb", tree: { foo: 1 } } }));
+assert.equal(tv.valid, false, "invalid tree reported");
+assert.ok(tv.errors.length >= 1, "validation explains what is wrong");
+const cell1 = await json(await call(steward, "POST", "/__polaris/steward/api/routes", { op: "cell", steward: "watch", cap: "notify.desktop", target: "*", route: "deny" }));
+assert.equal(cell1.routes.rules.length, 1, "single route cell changed");
+const cell2 = await json(await call(steward, "POST", "/__polaris/steward/api/routes", { op: "cell", steward: "watch", cap: "notify.desktop", target: "*", route: "inherit" }));
+assert.equal(cell2.routes.rules.length, 0, "inherit clears the exception");
+const au = await json(await call(steward, "GET", "/__polaris/steward/api/audit?limit=20"));
+assert.ok(Array.isArray(au.rows) && au.rows.length > 0, "intents are audited");
+assert.equal(typeof au.rows[0].decision, "string", "audit row carries its decision");
+const aexp = await call(steward, "GET", "/__polaris/steward/api/audit/export?limit=10");
+assert.equal(aexp.statusCode, 200, "audit export 200");
+assert.equal(JSON.parse(aexp.body.trim().split("\n")[0]).kind, "audit", "audit export header");
+const jexp = await call(steward, "GET", "/__polaris/steward/api/journal/export?limit=10");
+assert.equal(jexp.statusCode, 200, "journal export 200");
+assert.equal(JSON.parse(jexp.body.trim().split("\n")[0]).kind, "journal", "journal export header");
+
+// 13g. P3 carriers (lark.doc / llm / task) and OTLP trace export
+const cat3 = await json(await call(steward, "GET", "/__polaris/steward/api/catalog"));
+const ids3 = cat3.capabilities.map((c) => c.id);
+assert.ok(ids3.includes("record.larkdoc") && ids3.includes("summarize.llm") && ids3.includes("assign.task"), "P3 carrier instances installed");
+const carriers3 = new Set(cat3.capabilities.map((c) => c.carrier));
+assert.ok(carriers3.has("lark.doc") && carriers3.has("llm") && carriers3.has("task") && carriers3.has("file"), "new carriers in use");
+const otlp = await json(await call(steward, "GET", "/__polaris/steward/api/trace/otlp?limit=5"));
+assert.equal(otlp.resourceSpans.length, 1, "otlp envelope");
+const sp3 = otlp.resourceSpans[0].scopeSpans[0].spans;
+assert.ok(Array.isArray(sp3) && sp3.length > 0, "otlp spans exported");
+assert.match(sp3[0].traceId, /^[0-9a-f]{32}$/, "otlp trace id");
+
 const routeCount = routes.length;
 
 // 12. dispose stops the sampler

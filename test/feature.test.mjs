@@ -187,7 +187,7 @@ test("panel html contains the pyramid and the control buttons", async () => {
     assert.ok(i >= 0, "missing section: " + needle);
     return i;
   };
-  const order = ['id="attn-count"', 'id="btn-auto"', 'id="tk-title"', 'id="chat-log"', 'id="runs"', 'id="stewards-count"', 'id="agents-count"', 'id="echoes"', 'id="traces"', 'id="doctor-count"', 'class="maint"'];
+  const order = ['id="attn-count"', 'id="btn-auto"', 'id="tk-title"', 'id="chat-log"', 'id="runs"', 'id="stewards-count"', 'id="catalog-count"', 'id="routes-count"', 'id="agents-count"', 'id="echoes"', 'id="audit-count"', 'id="traces"', 'id="doctor-count"', 'class="maint"'];
   const positions = order.map(at);
   for (let i = 1; i < positions.length; i += 1) {
     assert.ok(positions[i - 1] < positions[i], order[i - 1] + " must sit above " + order[i]);
@@ -223,6 +223,15 @@ test("panel html contains the pyramid and the control buttons", async () => {
   assert.ok(at('id="stewards-count"') < at('id="agents-count"'), "stewards sit above the agent table");
   assert.ok(at('id="traces"') < at('id="doctor-count"'), "doctor sits below the trace view");
   assert.ok(at('id="doctor-count"') < at('class="maint"'), "doctor sits above the maintenance fold");
+  // P2 控制面：能力仓、路由矩阵、审计都在页面上（能力仓在主管之下、路由之下是 agent 明细、审计在追查之上）。
+  assert.ok(res.body.includes('id="catalog-count"'), "catalog view");
+  assert.ok(res.body.includes('id="cat-q"'), "catalog search box");
+  assert.ok(res.body.includes('id="routes"'), "route matrix");
+  assert.ok(res.body.includes('id="audit"'), "audit view");
+  assert.ok(res.body.includes('id="au-filter"'), "audit filter");
+  assert.ok(res.body.includes('id="sw-snippets"'), "snippet palette in the steward editor");
+  assert.ok(res.body.includes("cycleRoute"), "route cells are wired");
+  assert.ok(res.body.includes("exportAudit"), "audit export is wired");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
@@ -503,4 +512,119 @@ test("capability plane control surface: stewards, routes, doctor, trace replay a
   assert.equal((await call(steward, "GET", "/__polaris/steward/api/trace/replay")).statusCode, 404, "replay is POST only");
 
   for (const off2 of m.effects) { try { off2(); } catch { /* ignore */ } }
+});
+
+test("P2 control surface: catalog, route cells, tree snippets/validate, audit and exports", async () => {
+  const m = mount();
+  const steward = m.handler("steward");
+  const get = async (p) => json(await call(steward, "GET", "/__polaris/steward" + p));
+  const post = async (p, body) => json(await call(steward, "POST", "/__polaris/steward" + p, body));
+  await new Promise((r) => setTimeout(r, 60));
+
+  // 能力仓：清单带载荷/载体/授权/装备者，plan 能力带可插入的片段树。
+  const cat = await get("/api/catalog");
+  assert.equal(cat.ok, true);
+  assert.ok(cat.count >= 19, "catalog lists every capability");
+  assert.ok(String(cat.hash).startsWith("plane-"), "capability hash is reported");
+  const planCap = cat.capabilities.filter((c) => c.payload === "plan")[0];
+  assert.ok(planCap !== undefined && planCap.plan !== undefined, "plan capability carries its snippet tree");
+  assert.ok(Array.isArray(planCap.usedBy), "each capability lists its equip owners");
+  assert.ok(cat.capabilities.some((c) => c.usedBy.some((u) => u.id === "watch")), "watch equips something");
+  const filt = await get("/api/catalog?payload=verdict");
+  assert.ok(filt.capabilities.length >= 5 && filt.capabilities.every((c) => c.payload === "verdict"), "payload filter works");
+
+  // 片段目录 + 决策树校验（失败也返回 200 + errors，且不落盘）。
+  const snips = await get("/api/tree/snippets");
+  assert.equal(snips.ok, true);
+  assert.ok(snips.snippets.length >= 5, "plan snippets listed");
+  assert.equal(typeof snips.snippets[0].plan, "object", "snippet carries a tree");
+  const badTree = await post("/api/tree/validate", { steward: { id: "cbtest", tree: { foo: 1 } } });
+  assert.equal(badTree.ok, false, "invalid tree reports ok:false");
+  assert.equal(badTree.valid, false);
+  assert.ok(badTree.errors.length >= 1, "validation explains what is wrong");
+  const goodTree = await post("/api/tree/validate", { steward: { id: "cbtest", name: "CB", events: ["host/tick"], tree: { seq: [{ call: "judge.heap.high" }] } } });
+  assert.equal(goodTree.valid, true, "a well-formed tree validates");
+  assert.equal(goodTree.ok, true);
+
+  // 路由单格：改一格 → 读回 → inherit 清掉。
+  const cell = await post("/api/routes", { op: "cell", steward: "watch", cap: "notify.desktop", target: "*", route: "deny" });
+  assert.equal(cell.ok, true);
+  assert.equal(cell.routes.rules.length, 1);
+  assert.equal(cell.routes.errors.length, 0);
+  const again = await post("/api/routes", { op: "cell", steward: "watch", cap: "notify.desktop", target: "*", route: "inherit" });
+  assert.equal(again.routes.rules.length, 0, "inherit removes the exception");
+  assert.equal((await call(steward, "POST", "/__polaris/steward/api/routes", { op: "cell", cap: "x" })).statusCode, 400, "cell needs a steward");
+
+  // 审计：intent 级留痕；按决定过滤；可导出 ndjson。
+  const au = await get("/api/audit?limit=50");
+  assert.equal(au.ok, true);
+  assert.ok(Array.isArray(au.rows));
+  assert.ok(au.rows.length >= 1, "intents are audited");
+  assert.equal(typeof au.rows[0].decision, "string");
+  assert.ok(au.rows[0].cap.length > 0, "audit row names its capability");
+  const denied = await get("/api/audit?limit=50&decision=deny");
+  assert.ok(denied.rows.every((r) => r.decision === "deny"), "audit filters by decision");
+  const exp = await call(steward, "GET", "/__polaris/steward/api/audit/export?limit=20");
+  assert.equal(exp.statusCode, 200);
+  assert.ok(String(exp.headers["content-type"]).includes("ndjson"), "audit export is ndjson");
+  const rows = exp.body.trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(rows[0].kind, "audit");
+  assert.ok(rows.some((r) => r.kind === "intent"), "export carries intent rows");
+  const jexp = await call(steward, "GET", "/__polaris/steward/api/journal/export?limit=20");
+  assert.equal(jexp.statusCode, 200);
+  const jrows = jexp.body.trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(jrows[0].kind, "journal");
+  assert.ok(jrows.length >= 2, "journal export has a header plus rows");
+
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("P3 carriers: lark.doc / llm / task instances, and OTLP trace export", async () => {
+  const m = mount();
+  const steward = m.handler("steward");
+  const get = async (p) => json(await call(steward, "GET", "/__polaris/steward" + p));
+  const post = async (p, body) => json(await call(steward, "POST", "/__polaris/steward" + p, body));
+  await new Promise((r) => setTimeout(r, 60));
+
+  // 先用一个临时主管跑一次新载体（默认 echo，会留下 intent/span，不真发飞书）。
+  const armed = await post("/api/settings", {
+    patch: { plane: { stewards: [{
+      id: "p3probe", name: "P3 探针", enabled: true, events: ["agent/error"],
+      equips: ["record.larkdoc"],
+      tree: { seq: [{ call: "record.larkdoc", params: { title: "t", text: "x" } }] }
+    }] } }
+  });
+  assert.equal(armed.ok, true, "plane settings accepted");
+  m.ctx.emit("agent/error", { agentId: "agent-p3", message: "boom" });
+  await new Promise((r) => setTimeout(r, 150));
+
+  // 新增载体只是几条实例数据：主管/编排器一行都不改。
+  const cat = await get("/api/catalog");
+  const byId = new Map(cat.capabilities.map((c) => [c.id, c]));
+  assert.equal(byId.get("record.larkdoc").carrier, "lark.doc");
+  assert.equal(byId.get("assign.task").carrier, "task");
+  assert.equal(byId.get("summarize.llm").carrier, "llm");
+  assert.equal(byId.get("record.journal").carrier, "file");
+  assert.ok(cat.count >= 22, "P3 adds three capability instances");
+  const carriers = new Set(cat.capabilities.map((c) => c.carrier));
+  for (const name of ["desktop", "lark.im", "lark.doc", "file", "llm", "task", "session", "tool", "expr", "tree"]) {
+    assert.ok(carriers.has(name), "carrier in use: " + name);
+  }
+  const au = await get("/api/audit?limit=100&cap=record.larkdoc");
+  assert.ok(au.rows.length >= 1, "the new carrier call is audited");
+  assert.ok(au.rows.every((r) => r.cap === "record.larkdoc"), "audit filters by capability");
+
+  // OTLP：与指标同一套导出协议，trace/span 映射成 resourceSpans。
+  const otlp = await get("/api/trace/otlp?limit=5");
+  assert.equal(otlp.resourceSpans.length, 1);
+  const scopeSpans = otlp.resourceSpans[0].scopeSpans;
+  assert.equal(scopeSpans[0].scope.name, "polaris.capability-plane");
+  assert.ok(scopeSpans[0].spans.length >= 1, "traces export at least one span");
+  const sp = scopeSpans[0].spans[0];
+  assert.match(sp.traceId, /^[0-9a-f]{32}$/);
+  assert.match(sp.spanId, /^[0-9a-f]{16}$/);
+  assert.ok(String(sp.startTimeUnixNano).length >= 15, "start time is unix nanos");
+  assert.ok(sp.attributes.some((a) => a.key === "polaris.trigger"), "span carries its trigger");
+
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
