@@ -161,8 +161,13 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
   （宿主只在状态变化时发事件，卡死的 running 不会自己发）；running 且 8 分钟无事件 → `stalled`。
 - 待答提问：`userQuestions.continued(agent)`；宿主硬约束是只能查 root agent，所以子 agent 的问题
   只能通过它的父会话 `steer`。
-- 路由：pin（面板或 `POST api/pin`）→ 工作区路径前缀 → 标题正则 → `unassigned`；命中理由写进账本，
-  面板"归属依据"列可见。
+- 路由：pin（面板或 `POST api/pin`）→ 工作区路径前缀 → 标题正则 → **agent 判断** → `unassigned`；
+  命中理由写进账本，面板"归属依据"列可见。cwd 来自 `sessions.list()` 的 SessionHeader（`agents.list()`
+  不带工作目录），所以"这个会话在哪个仓库干活"就是最硬的证据。确定性路由落空的会交给宿主 llm
+  （`agentDefaultModel` 路由，可用 `classifier.provider/model` 覆盖）判断一次，答案按
+  `sha1(cwd|title|模块集)` 缓存在 `module-cache.json`（TTL 7 天）；低于 `minConfidence` 的也缓存成
+  unassigned，避免每个 tick 反复问模型。面板可以手改：模块规则卡片（JSON，含 workspaces/titles）
+  和 agent 表里的下拉框（固定到某模块 = 写 pin，永久生效），"重判"按钮强制重问一次。
 - 规则：13 条内置规则（`lib/features/steward/rules/builtin/{agents,system,social}.json`），
   字段 `id/version/when/if/actions/cooldownSec/severity/enabledByDefault/params`；表达式是自研的
   确定性求值器（不 eval、不 Function）。用户覆盖放 `~/.dsh/polaris-toolkit/rules/overrides/*.json`
@@ -175,6 +180,12 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
   `wf.host.protect`、`wf.digest`（汇总近期态势）。
 - 动作分档：默认 L1 只通知。`autoAct` 打开后，`actions.stallSteer` / `actions.heapSlim` 还要各自打开
   才会真的 steer 会话或瘦身（瘦身走 heap-guard 的同一个动作，失败只记降级）。
+- 动作有两挡：`actMode="echo"`（默认）下规则照常求值，但通知 / 投递 followup / 代答提问都只把
+  message 打出来（面板"拟执行"卡片 + `actions` 里 `kind:"echo"`），不产生任何副作用；主人看过 ack 之后
+  把 `actMode` 切到 `live`（面板按钮会二次确认）才真正执行。`autoAct` 与 `actMode` 是两道独立的闸。
+- 指标出口：`GET /__polaris/steward/metrics` 输出 Prometheus 文本（堆、P99、崩溃数、agent/模块计数、
+  运行与待批、预算、信号、事件、标题缓存）；`export.otlp.enabled=true` 时按 `intervalSec` 把同一份
+  指标 POST 到 `<endpoint>/v1/metrics`（resource attributes: service.name=polaris-toolkit）。
 - 审批：`POST api/answer {id, answer, version}` 带版本 CAS，两个端同时点只有一个生效；到期自动作废。
 - 上报：desktop 通道（内存环形 200 条）永远可用；飞书走本机 `lark-cli`
   （`notify.larkEnabled=true` 才启用，`notify.minSeverity` 默认 warning）。
@@ -254,6 +265,11 @@ steward 的运行期设置（settings.json 的 `steward` 节，面板控制条�
                model: "auto", rotateTurns: 200, rotateTokens: 300000 }
     federation: { hostId: "win-main", secret: "", peerUrl: "" }
     budgetPerHour: 60                  # 动作预算，超了只保留 critical
+    actMode: "echo"                    # echo = 只打印拟执行的动作，live = 真执行
+    classifier: { enabled: true, provider: "", model: "", minConfidence: 0.55,
+                  maxPerTick: 2, timeoutMs: 12000, maxTokens: 120, ttlDays: 7 }
+    export: { prometheus: true, intervalSec: 60,
+              otlp: { enabled: false, endpoint: "", headers: {} } }
     modules: [...] / pins: {...}
 
 面板上可改的运行期设置（settings.json，改完立即生效）：
