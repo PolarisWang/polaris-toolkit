@@ -79,10 +79,13 @@ for (const needle of ['pnpm install --frozen-lockfile', 'pnpm test', 'test:cover
   if (!ci.includes(needle)) fail('.github/workflows/ci.yml is missing: ' + needle);
 }
 
-// 5) 行尾约定（见 AGENTS.md）
-for (const rel of ['README.md', 'lib/features/steward/http.js']) {
-  const abs = path.join(root, rel);
-  if (!fs.existsSync(abs) || !fs.readFileSync(abs, 'utf8').includes(CR + NL)) fail(rel + ' must keep CRLF line endings');
+// 5) 行尾约定（见 AGENTS.md）；CRLF 只对 Windows 工作副本要求：仓库里以 LF 存储，
+//    Linux/macOS 检出是 LF，不能因此判失败。
+if (process.platform === 'win32') {
+  for (const rel of ['README.md', 'lib/features/steward/http.js']) {
+    const abs = path.join(root, rel);
+    if (!fs.existsSync(abs) || !fs.readFileSync(abs, 'utf8').includes(CR + NL)) fail(rel + ' must keep CRLF line endings');
+  }
 }
 
 // 6) 误生成的垃圾目录

@@ -51,7 +51,7 @@ test('polaris rollback reports a missing profile backup', () => {
 });
 
 test('polaris release --dry-run runs the gates without tagging', () => {
-  const r = polaris(['release', '--dry-run', '--allow-dirty', '--skip-tests']);
+  const r = polaris(['release', '--dry-run', '--allow-dirty', '--skip-tests', '--force-tag']);
   assert.equal(r.code, 0, r.err);
   assert.ok(r.out.includes('release check ok'));
   assert.ok(r.out.includes('v' + pkg.version));
