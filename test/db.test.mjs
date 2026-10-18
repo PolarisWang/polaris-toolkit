@@ -13,8 +13,8 @@ function tmpDir() {
 }
 
 test("schema lists the design tables plus the task queue", () => {
-  assert.equal(Object.keys(TABLES).length, 13);
-  for (const name of ["hosts", "modules", "subjects", "signals", "routing", "runs", "steps", "timers", "actions", "approvals", "dlq", "settings_history", "tasks"]) {
+  assert.equal(Object.keys(TABLES).length, 17);
+  for (const name of ["hosts", "modules", "subjects", "signals", "routing", "runs", "steps", "timers", "actions", "approvals", "dlq", "settings_history", "tasks", "intents", "traces", "spans", "effects"]) {
     assert.ok(TABLES[name] !== undefined, name + " missing");
   }
 });

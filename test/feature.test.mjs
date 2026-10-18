@@ -108,7 +108,9 @@ test("state endpoint answers and carries every section", async () => {
     assert.ok(key in s, "state has " + key);
   }
   assert.ok(s.modules.length >= 5, "module buckets");
-  assert.ok(s.rules.count >= 13, "builtin rules");
+  assert.ok(s.rules.count >= 19, "capability instances");
+  assert.ok(String(s.rules.hash).startsWith("plane-"), "plane hash");
+  assert.ok(s.plane && Array.isArray(s.plane.stewards) && s.plane.stewards.some((st) => st.id === "watch" && st.enabled !== false), "builtin steward equipped");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
@@ -124,8 +126,20 @@ test("observed agents land in the ledger and errors fire a rule", async () => {
   s = await json(await call(m.handler("steward"), "GET", "/__polaris/steward/api/state"));
   assert.ok(s.signals.some((x) => x.kind === "agent/error"), "error signal");
 
-  const runs = await json(await call(m.handler("steward"), "GET", "/__polaris/steward/api/runs"));
-  assert.ok(runs.runs.some((r) => String(r.subject) === "a1"), "rule started a workflow for the agent");
+  // 能力平面：默认「带班」编制关闭，所以 agent/error 不建 trace；
+  // 装备并打开它之后，同一个事件就会落一条 trace。
+  const before = await json(await call(m.handler("steward"), "GET", "/__polaris/steward/api/trace?limit=20"));
+  assert.equal(before.ok, true);
+  assert.ok(Array.isArray(before.traces), "trace list");
+  const armed = await json(await call(m.handler("steward"), "POST", "/__polaris/steward/api/settings", {
+    patch: { plane: { stewards: [{ id: "agent", enabled: true, events: ["agent/tick", "agent/error"] }] } }
+  }));
+  assert.equal(armed.ok, true, "plane settings accepted");
+  m.ctx.emit("agent/error", { agentId: "a1", message: "boom again" });
+  await new Promise((r) => setTimeout(r, 40));
+  const after = await json(await call(m.handler("steward"), "GET", "/__polaris/steward/api/trace?limit=20"));
+  assert.ok(after.traces.length > before.traces.length, "plane traced the agent/error event");
+  assert.ok(after.traces.some((tr) => tr.trigger === "agent/error"), "trace carries the trigger");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
@@ -173,7 +187,7 @@ test("panel html contains the pyramid and the control buttons", async () => {
     assert.ok(i >= 0, "missing section: " + needle);
     return i;
   };
-  const order = ["需要你处理", "控制", "交办", "对话", "正在发生", "Agent 明细", "记录", "维护"];
+  const order = ["需要你处理", "控制", "交办", "对话", "正在发生", "Agent 明细", "记录", "追查", "维护"];
   const positions = order.map(at);
   for (let i = 1; i < positions.length; i += 1) {
     assert.ok(positions[i - 1] < positions[i], order[i - 1] + " must sit above " + order[i]);
@@ -184,6 +198,12 @@ test("panel html contains the pyramid and the control buttons", async () => {
   assert.ok(res.body.includes('id="runs-count"'), "running workflow counter");
   assert.ok(res.body.includes('id="agents-count"'), "agent counter");
   assert.ok(res.body.includes('id="mods-count"'), "module counter");
+  // 追查页：能力平面的 trace 列表 + 瀑布细节，且落在维护折叠区之上。
+  assert.ok(res.body.includes('id="traces"'), "trace list");
+  assert.ok(res.body.includes('id="tr-filter"'), "trace filter");
+  assert.ok(at('id="traces"') < at('class="maint"'), "trace view sits above the maintenance fold");
+  // 内联 onclick 在全局作用域求值，面板必须把函数挂到 window（曾经的静默回归：按钮点了没反应）。
+  assert.ok(res.body.includes("GLOBAL_FNS"), "inline handlers are exposed to window");
   // 指挥台：交办输入、对话记录、明细抽屉都在页面上，且「交办」在「对话」之上、「对话」在流程之上。
   assert.ok(res.body.includes('id="tk-title"'), "task composer");
   assert.ok(res.body.includes('id="tk-target"'), "task target picker");

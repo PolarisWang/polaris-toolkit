@@ -236,8 +236,26 @@ assert.equal(sfeat.actions.length, 4, "four steward actions");
 
 const rules = await json(await call(steward, "GET", "/__polaris/steward/api/rules"));
 assert.equal(rules.ok, true);
-assert.ok(rules.count >= 13, "builtin rules loaded");
-assert.match(rules.hash, /^[0-9a-f]{16}$/, "rules hash");
+assert.ok(rules.count >= 19, "capability instances loaded");
+assert.match(rules.hash, /^plane-[0-9a-f]+$/, "plane hash");
+assert.ok(Array.isArray(rules.capabilities) && rules.capabilities.length === rules.count, "capability list");
+assert.ok(Array.isArray(rules.stewards) && rules.stewards.some((st) => st.id === "watch"), "builtin steward equipped");
+
+// 13c. capability plane: traces, waterfall detail and the ability to arm a steward
+const t0 = await json(await call(steward, "GET", "/__polaris/steward/api/trace?limit=20"));
+assert.equal(t0.ok, true);
+assert.ok(Array.isArray(t0.traces), "trace list");
+const armed = await json(await call(steward, "POST", "/__polaris/steward/api/settings", { patch: { plane: { stewards: [{ id: "agent", enabled: true, events: ["agent/tick", "subagent/end"] }] } } }));
+assert.equal(armed.ok, true, "plane steward armed through settings");
+ctx.emit("subagent/end", { agentId: "agent-1", subagentId: "sub-1" });
+await new Promise((r) => setTimeout(r, 60));
+const t1 = await json(await call(steward, "GET", "/__polaris/steward/api/trace?limit=20"));
+assert.ok(t1.traces.length > t0.traces.length, "plane traced the subagent/end event");
+const one = t1.traces.find((x) => x.trigger === "subagent/end");
+assert.ok(one, "trace carries its trigger");
+const detail = await json(await call(steward, "GET", "/__polaris/steward/api/trace?id=" + encodeURIComponent(one.id)));
+assert.equal(detail.ok, true);
+assert.ok(detail.trace && detail.waterfall && Array.isArray(detail.waterfall.spans), "trace waterfall detail");
 
 const runs0 = await json(await call(steward, "GET", "/__polaris/steward/api/runs?limit=5"));
 assert.equal(runs0.ok, true);
