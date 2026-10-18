@@ -289,6 +289,43 @@ assert.equal(modeEcho.settings.actMode, "echo", "actMode restored to echo");
 const badCls = await json(await call(steward, "POST", "/__polaris/steward/api/classify", { agentId: "nope" }));
 assert.equal(badCls.ok, false, "unknown agent refused");
 
+// 14. 工具包级指标出口（P0-2）
+const tkMetrics = await call(toolkit, "GET", "/__polaris/metrics");
+assert.equal(tkMetrics.statusCode, 200, "toolkit metrics route");
+assert.ok(String(tkMetrics.headers["content-type"]).includes("text/plain"), "metrics text content type");
+for (const name of ["polaris_heap_used_mb", "polaris_features_total", "polaris_heap_guard_used_pct", "polaris_steward_agents_total"]) {
+  assert.ok(tkMetrics.body.includes(name), "metric " + name);
+}
+assert.match(tkMetrics.body, /# TYPE polaris_heap_used_mb gauge/, "type line");
+
+// 14b. 写令牌（P0-3）：去掉令牌后写请求被拒，读请求仍然放行
+const savedToken = TOKEN;
+TOKEN = "";
+const denied = await call(toolkit, "POST", "/__polaris/api/settings", { feature: "heap-guard", patch: { autoSlim: false } });
+assert.ok(denied.statusCode === 401 || denied.statusCode === 403, "write refused without token: " + denied.statusCode);
+const openRead = await call(toolkit, "GET", "/__polaris/api/features");
+assert.equal(openRead.statusCode, 200, "read stays open");
+TOKEN = savedToken;
+
+// 14c. 非法设置被 400 拒绝（P1-6）
+const rejected = await call(toolkit, "POST", "/__polaris/api/settings", { feature: "heap-guard", patch: { slimLevel: 99 } });
+assert.equal(rejected.statusCode, 400, "invalid patch rejected");
+assert.equal((await json(rejected)).code, "invalid-settings");
+
+// 14d. 能力 / 总线 / 调度 / 装机记录（P1-4、P1-5、P2-9、P2-11）
+const feats2 = await json(await call(toolkit, "GET", "/__polaris/api/features"));
+assert.ok(feats2.capabilities.includes("heap-guard.action"), "capability registry");
+assert.ok(Array.isArray(feats2.bus) && feats2.bus.includes("heap/critical"), "bus topics");
+assert.ok(Array.isArray(feats2.scheduler) && feats2.scheduler.length >= 2, "scheduler tasks");
+assert.ok(typeof feats2.install.version === "string", "install info");
+
+// 14e. journal 增量拉取（P2-12）
+const j1 = await json(await call(steward, "GET", "/__polaris/steward/api/journal?since=0&limit=5"));
+assert.equal(j1.ok, true, "journal page");
+assert.ok(Array.isArray(j1.entries) && j1.entries.length > 0, "journal entries");
+const j2 = await json(await call(steward, "GET", "/__polaris/steward/api/journal?since=" + j1.latest));
+assert.ok(j2.entries.every((e) => e.seq > j1.latest), "only entries past the cursor");
+
 const routeCount = routes.length;
 
 // 12. dispose stops the sampler

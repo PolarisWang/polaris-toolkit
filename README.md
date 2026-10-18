@@ -41,12 +41,19 @@ Heap Guard 做三件事：
         panel.js            入口面板（feature 卡片列表 + iframe 装 feature 面板）
         client.js           客户端半边（__ModuleLoader__ 经典脚本；侧栏/主面板/会话头按钮）
         core/
-          host.js           工具包宿主：feature 生命周期、路由收集、设置存储、工具注册
+          host.js           工具包宿主：feature 生命周期、路由收集、设置存储、工具注册、
+                            指标/总线/调度/能力注册表、写请求令牌校验、装机信息
           paths.js          ~/.dsh/polaris-toolkit 下的路径与 CSV/格式化小工具
-          settings.js       settings.json 读写（每个 feature 一节，改完立即生效）
+          settings.js       settings.json 读写（版本信封 + 深合并 + schemastery 校验）
+          statefile.js      状态文件版本/迁移/保留期清理（loadVersioned / pruneFiles / pruneCsv）
+          metrics.js        指标注册表（gauge/counter）+ 宿主采样器（堆/RSS/事件循环）
+          secret.js         安装级随机令牌（<stateDir>/secret，0600）
           http.js           极简路由 + JSON/HTML 响应 + 请求体读取
-          fence.js          宿主来源校验（Host 头/同源）
+          fence.js          宿主来源校验（Host 头/同源）+ 写操作令牌比对
           zstd.js           多帧 zstd 解析（session.v4.jsonl.zstd 是逐次追加的多帧文件）
+        panel/
+          kit.js            面板公共件的服务端半边（注入 kit.js、共享 CSS 变量）
+          kit.client.js     浏览器公共件 window.PolarisKit（esc/fmt/api/poll/toast）
         features/
           index.js          FEATURES 注册表（新增功能只改这一行）
           heap-guard/
@@ -59,7 +66,13 @@ Heap Guard 做三件事：
             bili.js         bili 配置读写与预算调整
             titles.js       会话名缓存（子进程扫描 + mtime/size 校验 + 内存标题）
           steward/          大内总管：观察 / 规则 / 持久工作流 / 审批 / 联邦
-            index.js        该 feature 的接线（全部构造都包在 attempt 里，失败只降级）
+            index.js        只做装配（约 300 行）：构造 + attempt 降级 + dispose
+            config.js       Config / settings / settingsSchema / normalize / readSettings
+            state.js        只读视图（state/modules/agents/budget/runs/approvals）
+            metrics.js      15 条 polaris_steward_* gauge + 每模块 gauge + 统计缓存
+            brain.js        规则 -> 工作流（fire/evaluate*/tick + 事件桥 + heap/critical 订阅）
+            http.js         路由表 + agent 工具 + action/status（HTTP 层整体搬出）
+            actuators/gated.js  echo/live 闸门（actMode=echo 时只把拟执行动作写进账本）
             panel.js        金字塔面板（结论 / 控制条 / 模块 / 待批 / 工作流 / agent / 信号）
             core/           账本 store、db（sqlite 或 JSON 降级）、schema、approvals、健康采样
             wf/             引擎 engine.js（三段式 / 定时器 / 租约 / 重试 / DLQ）与内置流程 defs.js
@@ -68,6 +81,7 @@ Heap Guard 做三件事：
             actuators/      notify / prompt / answer 三个动作出口
             channels/       desktop（内存环形）、feishu（lark-cli 子进程）
             federation/     信封 envelope.js（HMAC）与 peer.js（白名单 / 去重 / 心跳）
+      bin/polaris.mjs       运维入口：node bin/polaris.mjs install | doctor | version
       bin/slim.mjs          独立瘦身脚本（子进程运行，可脱离插件单用）
       bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
       docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
@@ -100,6 +114,22 @@ node_modules 目录挪进 .ignored\；写成 injected 的 file: 依赖后，pnpm
 
 参数：-Profile <目录>（默认 desktop）、-NoBundles（只装不挂载）、-KeepOld（保留旧包）、
 -NoPnpm（跳过 pnpm，退回手工复制并警告）。
+
+更推荐的入口是同一套逻辑的 node 版（install.ps1 现在只是它的薄壳）：
+
+    node bin/polaris.mjs install         # 装到默认 profile（win32 上转发给 install.ps1）
+    node bin/polaris.mjs doctor          # 只读体检：清单/注入副本/bundles/版本漂移/端口
+    node bin/polaris.mjs doctor --json   # 给脚本用
+    node bin/polaris.mjs version
+
+doctor 逐项给出 ok/warn/fail 与修复建议，有 fail 时退出码非 0：检查 profile 的 package.json 有无 BOM、
+依赖是否仍是 file: 且指向本仓库、dependenciesMeta 是否 injected、bundles 是否含且**只含一次**本包
+（重复挂载会让插件树起不来）、node_modules 里的副本版本/文件数/是否比仓库旧，以及状态目录、settings.json
+版本、令牌文件权限。装完会顺手写一份装机记录：
+
+    %USERPROFILE%\.dsh\polaris-toolkit\install.json   { at, version, repo, profile, files, mode, node, pnpm }
+
+面板页脚会显示这份记录的版本 / 装机时间 / 来源路径，装完没重启或装到了别的 profile 一眼就能看出来。
 
 **安装/升级后必须重启 DSH**：host 半边在 DSH 启动时加载，页面刷新不够（客户端半边刷新即可）。
 
@@ -275,13 +305,31 @@ steward 的运行期设置（settings.json 的 `steward` 节，面板控制条�
 面板上可改的运行期设置（settings.json，改完立即生效）：
 autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、maxPerClick（每轮上限）。
 
+settings.json 是**带版本信封**的文档，不要手写成裸映射：
+
+    { "v": 1, "d": { "heap-guard": { "slimLevel": 3 }, "steward": { "actMode": "echo" } } }
+
+写入口（面板按钮、POST /__polaris/api/settings）会先把 patch 深合并进现有值，再按该 feature 的
+settingsSchema（schemastery）整体校验，非法值直接 400 `invalid-settings` 且**不落盘**；
+老格式（裸映射，v=0）在启动时自动升级，未知键保留不丢。
+
+**写请求要令牌**：/__polaris/* 匿名可读（只读 GET 便于排障），但所有非 GET 请求必须带
+`x-polaris-token`（或同名 cookie）。令牌在首次安装时随机生成并落在
+%USERPROFILE%\.dsh\polaris-toolkit\secret（权限 0600），打开面板时通过 cookie 自动带上；
+从命令行改设置要自己加头：
+
+    curl -H "x-polaris-token: $(cat ~/.dsh/polaris-toolkit/secret)" ...
+
+
 ---
 
 ## 7. 状态与产物
 
 全部在 %USERPROFILE%\.dsh\polaris-toolkit：
 
-    settings.json                     运行期设置（按 feature 分节）
+    secret                            写请求令牌（首次启动随机生成，0600）
+    install.json                      最近一次安装的记录（版本/来源/文件数/时间）
+    settings.json                     运行期设置（版本信封 v + d，按 feature 分节）
     features/heap-guard/samples.csv   采样 CSV（config.csv=true 时）
     features/heap-guard/slim-backup-*/ 每次瘦身前的原文件备份
     features/heap-guard/snapshots/    V8 堆快照
@@ -290,6 +338,8 @@ autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、max
     features/steward/steward.db      总管库（node:sqlite；裁剪环境下降级为 steward.db.json + steward.ops.jsonl）
     features/steward/rules/overrides/ 规则覆盖（*.json，改完 POST api/rules/reload）
     features/steward/slim-backup-*   被 wf.host.protect 触发瘦身时的原文件备份
+
+启动时会做一次保留期清理：journal-YYYYMMDD.jsonl 保留 30 天，samples.csv 保留 14 天且最多 2 万行。
 
 瘦身档位（bin/slim.mjs）：
 
@@ -321,6 +371,8 @@ autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、max
       order: 20,                    // 卡片排序
       Config,                       // @deepseek-ai/schemastery 的 z.object（可选）
       settings(config) { return { ... } },   // 运行期可改设置的默认值（可选）
+      settingsSchema,               // 运行期设置的校验 schema（schemastery，可选但强烈建议）
+                                    // 面板/HTTP 的 patch 先深合并再校验，非法值 400 不落盘
       actions: [                    // 面板按钮元数据（纯声明）
         { id: "do", kind: "button", label: "执行", hint: "说明", confirm: true },
         { id: "auto", kind: "toggle", label: "自动", setting: "autoRun" }
@@ -338,6 +390,16 @@ setup(scope) 可用的 scope API：
 - scope.tool(spec)                     注册一个普通 defineTool spec（宿主负责包装）
 - scope.onDispose(fn)                  卸载时的清理
 - scope.runtime                        自己放运行时对象
+- scope.metrics.gauge(name, read, opts) / .counter(name, opts)  只发布，不许自己造出口
+- scope.host                            宿主采样器（sample/peek/last：堆/RSS/事件循环）
+- scope.every(ms, fn, { jitter })       统一调度（卸载自动停；堆压时全局降频）
+- scope.provide(name, fn) / scope.use(name)   跨 feature 能力注册表（拿不到就降级，不要直接摸别人）
+- scope.bus.on(topic, fn) / emit(topic, payload)   工具包事件总线（当前主题：heap/critical）
+- scope.log / scope.now / scope.core    日志、时间、路由与响应小工具
+
+约定：每个 feature 只**发布**指标，工具包统一在 GET /__polaris/metrics 暴露 Prometheus 文本，
+steward 的导出（/__polaris/steward/metrics、OTLP）复用同一份快照，所以同名指标只有一份。
+所有定时任务都走 scope.every（带抖动），宿主堆到 80% 时自动降到 1/4 频率。
 
 然后在 lib/features/index.js 里 import 并加进 FEATURES。工具包会自动：校验 config 片段、
 建状态目录、把 feature 面板挂到 /__polaris/<id>/panel、在入口面板里列出卡片。
@@ -380,3 +442,4 @@ setup(scope) 可用的 scope API：
 - 设置改了不生效：settings.json 是即时读取的；如果面板没变，检查 /__polaris/api/settings?feature=heap-guard。
 - 自动清理不动手：默认关；另外要等级已达阈值、无 agent 在跑、冷却期已过、每小时未超限。
 - 想完全停掉瘦身：config.slim.enabled=false，或面板把自动清理关掉并手动不点按钮。
+

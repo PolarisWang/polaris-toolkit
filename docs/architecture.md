@@ -38,14 +38,23 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
     lib/index.js                 插件入口：PREFIX = "/__polaris"，Config = { features: {} }
     lib/core/host.js             mountToolkit()：feature 生命周期、路由、工具、设置、围栏
     lib/core/paths.js            stateDir() / featureDir(id) / sessionsRoot() 等路径与格式化
-    lib/core/settings.js         settings.json（按 feature 分节，原子写，每次读取重读文件）
+    lib/core/settings.js         settings.json（版本信封 v+d、深合并、schemastery 校验、原子写）
+    lib/core/statefile.js        loadVersioned / pruneFiles / pruneCsv（版本、迁移、保留期）
+    lib/core/metrics.js          gauge/counter 注册表 + 宿主采样器（堆/RSS/事件循环）
+    lib/core/secret.js           安装级随机令牌（<stateDir>/secret，0600）
     lib/core/http.js             sendJson/sendText/sendHtml、readBody、createRouter
-    lib/core/fence.js            同源围栏：loopback 信任 + sec-fetch-site 拦截
+    lib/core/fence.js            同源围栏：loopback 信任 + sec-fetch-site 拦截 + 写请求令牌比对
+    lib/panel/kit.js             面板公共件（服务端半边：注入 kit.js、共享 CSS 变量）
+    lib/panel/kit.client.js      浏览器公共件 window.PolarisKit（esc/fmt/api/poll/toast）
     lib/core/zstd.js             拼接式 zstd 容器按帧读取（解析帧头/解压）
     lib/features/index.js        FEATURES 登记表（新增功能只改这里 + 新目录）
     lib/features/heap-guard/     首个功能（宿主逻辑、面板 HTML、采样器、瘦身、快照、bili、会话名）
     lib/features/steward/        大内总管（详见 steward-design.md）
-      index.js                   feature 入口：全部构造都包 attempt，失败只降级、不抛
+      index.js                   只做装配（约 300 行）：全部构造都包 attempt，失败只降级、不抛
+      config.js                  Config/settings/settingsSchema/normalize/readSettings
+      state.js                   只读视图；metrics.js 指标发布；brain.js 规则->工作流 + tick
+      http.js                    路由表 + 5 个 agent 工具 + action/status
+      actuators/gated.js         echo/live 闸门（echo 只把拟执行动作写进账本）
       panel.js                   金字塔面板：结论 / 控制条 / 模块 / 待批 / 工作流 / agent / 信号
       core/{store,db,schema,approvals,bus,health}.js  账本 + 12 表（sqlite 或 JSON 降级）+ 审批
       wf/{engine,defs}.js        持久工作流引擎与 5 个内置流程
@@ -55,6 +64,7 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
       federation/{envelope,peer}.js                     HMAC 信封与白名单命令
     lib/panel.js                 工具包外壳页（左功能卡片 + 右 iframe）
     lib/client.js                客户端入口：注册左侧栏面板、右侧 tab、会话头 chip、设置页
+    bin/polaris.mjs              运维入口：install / doctor / version（install.ps1 是它的薄壳）
     bin/slim.mjs                 会话瘦身子进程（L1/L2/L3）
     bin/titles.mjs               会话名扫描子进程（有界读帧）
     install/install.ps1          安装到 %USERPROFILE%\.dsh\profiles\<profile>（注入式 file: 依赖 + pnpm install + 写 bundles）
@@ -70,21 +80,30 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
       order: 10,                            // 外壳卡片排序
       Config,                               // schemastery（可缺省）
       settings(config),                     // 运行期可改设置的默认值（可缺省）
+      settingsSchema,                       // 运行期设置的校验 schema（可缺省，建议必填）
       actions: [ { id, kind: "button"|"toggle", label, hint, confirm, setting } ],
       setup(scope),                         // 必需：注册路由/工具/采样，用 scope.onDispose 收尾
       async action(scope, id, body) {},      // 非 toggle 的动作实现
       async status(scope) {}                // 可选：外壳卡片上的状态与等级
     }
 
-`scope` = `{ id, ctx, config, dir, settings, core, log, route, tool, onDispose, runtime, shared }`：
+`scope` = `{ id, ctx, config, dir, settings, core, log, now, route, tool, onDispose, runtime, shared,
+metrics, host, every, provide, use, bus }`：
 
 - `route(method, path, handler)` 注册到 `<prefix>/<id>` 下；面板必须用相对 URL 访问。
 - `tool(spec)` 走 `defineTool` 注册到 DSH 工具表。
-- `settings.all()/get(k)/set(patch)` 读写 `settings.json` 的该 feature 分节。
+- `settings.all()/get(k)/set(patch)/validate(patch)` 读写 `settings.json` 的该 feature 分节；
+  `set` 先深合并再按 `settingsSchema` 校验，非法时抛 `SettingsError`（HTTP 层映射成 400）。
 - `onDispose(fn)` 在插件卸载时执行（每个 feature 一个 `ctx.effect`）。
 - `runtime` 放面板/工具都要用的实例（采样器、瘦身器、会话名缓存…）。
-- `shared.runtimes` 是**跨 feature 的只读句柄表**（`Map<featureId, record>`），只暴露 record 的
-  `action(actionId, body)` 与 `status()`；steward 通过它触发 heap-guard 的瘦身，不共享任何内部状态。
+- `metrics.gauge(name, read, { help, labels })` / `metrics.counter(name)`：**只发布**，出口由工具包统一提供。
+- `host`：工具包级宿主采样器（`sample()/peek()/last`），避免每个 feature 各采一遍堆和事件循环。
+- `every(ms, fn, { jitter })`：统一调度句柄，卸载自动停；堆压时全局降频（80%→1/4，65%→1/2）。
+- `provide(name, fn)` / `use(name)`：跨 feature 能力注册表。`use` 拿不到就返回 undefined，
+  调用方必须降级（例：steward `use("heap-guard.action")` 触发瘦身、`use("heap-guard.titles")` 取会话名）。
+- `bus.on(topic, fn)` / `bus.emit(topic, payload)`：工具包事件总线，当前主题 `heap/critical`。
+- `shared.runtimes` 仍然保留（`Map<featureId, record>`，只暴露 record 的 `action/status`），
+  但新代码应当走 `provide/use`：它按能力命名，不依赖某个 feature 的内部形状。
 
 加载隔离是硬要求：feature 的 `setup` 外层必须 try/catch，内部每一步构造也要单独兜底，
 任何服务缺失/异常只能降级（面板与 `api/state` 里能看到 degraded），绝不能让插件加载失败——
@@ -94,11 +113,23 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
 
     GET  /__polaris/            外壳页（独立）
     GET  /__polaris/panel       外壳页（嵌入）
-    GET  /__polaris/api/features  功能清单 + 各自 status/settings/actions
+    GET  /__polaris/api/features  功能清单 + 各自 status/degraded/settings/actions，
+                                 附带 install / metrics / scheduler / capabilities / bus
+    GET  /__polaris/api/install   最近一次安装记录
+    GET  /__polaris/metrics       Prometheus 文本（所有 feature 发布 + 宿主默认指标）
+    GET  /__polaris/kit.js        浏览器公共件
     GET  /__polaris/api/settings  全部设置
-    POST /__polaris/api/settings  { feature, patch }
+    POST /__polaris/api/settings  { feature, patch }  -> 校验失败 400 code="invalid-settings"
     POST /__polaris/api/action    { feature, action, ...body }
                                  kind="toggle" 的动作由宿主直接写 settings[setting]
+
+**写操作令牌**：只读 GET 匿名放行（排障方便），所有非 GET 请求必须带 `x-polaris-token`
+（或同名 cookie），否则 401/403。令牌首次启动随机生成、落在 `<stateDir>/secret`（0600），
+面板页在 `sendPanel` 里以 `Set-Cookie` 下发，所以浏览器里点按钮无需配置；命令行要自己带头。
+
+**degraded**：feature 的 `setup`/`route`/`tool` 任何一环抛异常都只记 `record.degraded =
+{ phase, error, at }`，卡片状态变成 high 并显示原因；该 feature 的 HTTP 入口回 503，其余 feature 与
+工具包本身照常工作。`/api/features` 里能直接看到 `degraded` 字段。
 
 ## 4. 客户端表面
 

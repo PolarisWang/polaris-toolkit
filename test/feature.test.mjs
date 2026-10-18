@@ -184,3 +184,63 @@ test("remounting in the same process keeps working", async () => {
   assert.equal((await json(res)).ok, true);
   for (const off of b.effects) { try { off(); } catch { /* ignore */ } }
 });
+
+test("toolkit metrics endpoint exports host and feature gauges", async () => {
+  const m = mount();
+  const res = await call(m.toolkit, "GET", "/__polaris/metrics");
+  assert.equal(res.statusCode, 200);
+  assert.ok(String(res.headers["content-type"]).includes("text/plain"), "prometheus content type");
+  for (const name of ["polaris_heap_used_mb", "polaris_features_total", "polaris_heap_guard_used_pct", "polaris_steward_agents_total"]) {
+    assert.ok(res.body.includes(name), "metric " + name);
+  }
+  assert.ok(/# TYPE polaris_heap_used_mb gauge/.test(res.body), "type lines present");
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("write routes need the install token, read routes stay open", async () => {
+  const m = mount();
+  const saved = TOKEN;
+  TOKEN = "";
+  const denied = await call(m.toolkit, "POST", "/__polaris/api/settings", { feature: "heap-guard", patch: { autoSlim: true } });
+  assert.ok(denied.statusCode === 401 || denied.statusCode === 403, "write refused, got " + denied.statusCode);
+  const read = await call(m.toolkit, "GET", "/__polaris/api/features");
+  assert.equal(read.statusCode, 200, "read stays open");
+  TOKEN = saved;
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("invalid settings patches are rejected with 400", async () => {
+  const m = mount();
+  const bad = await call(m.toolkit, "POST", "/__polaris/api/settings", { feature: "heap-guard", patch: { slimLevel: 99 } });
+  assert.equal(bad.statusCode, 400);
+  const body = await json(bad);
+  assert.equal(body.code, "invalid-settings");
+  const ok = await call(m.toolkit, "POST", "/__polaris/api/settings", { feature: "heap-guard", patch: { slimLevel: 2 } });
+  assert.equal(ok.statusCode, 200, "valid nested patch still applies");
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("features endpoint exposes install, capabilities, bus and scheduler", async () => {
+  const m = mount();
+  const f = await json(await call(m.toolkit, "GET", "/__polaris/api/features"));
+  assert.equal(typeof f.install, "object");
+  assert.equal(f.install.version, "0.3.0");
+  assert.ok(f.capabilities.includes("heap-guard.action"), "capability registry published");
+  assert.ok(Array.isArray(f.scheduler) && f.scheduler.length >= 2, "scheduler tasks listed");
+  assert.ok(Array.isArray(f.bus) && f.bus.includes("heap/critical"), "bus topics listed");
+  assert.ok(typeof f.metrics === "number" && f.metrics > 0, "metric count reported");
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("journal supports incremental pull with since", async () => {
+  const m = mount();
+  m.ctx.emit("agent/error", { agentId: "a2", message: "boom" });
+  const first = await json(await call(m.handler("steward"), "GET", "/__polaris/steward/api/journal?since=0"));
+  assert.equal(first.ok, true);
+  assert.ok(first.entries.length > 0, "entries returned");
+  assert.ok(first.latest > 0, "cursor returned");
+  const second = await json(await call(m.handler("steward"), "GET", "/__polaris/steward/api/journal?since=" + first.latest));
+  assert.equal(second.ok, true);
+  assert.ok(second.entries.every((e) => e.seq > first.latest), "only entries past the cursor");
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
