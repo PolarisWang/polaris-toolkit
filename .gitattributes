@@ -1,0 +1,6 @@
+# 仓库里统一 LF 存储；只有 Windows 工具链需要的文件在检出时用 CRLF。
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+README.md text eol=crlf
+lib/features/steward/http.js text eol=crlf

@@ -17,7 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: ["20", "22", "24"]
+        # pnpm 11 需要 Node >= 22.13，Node 20 跑不起 pnpm。
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

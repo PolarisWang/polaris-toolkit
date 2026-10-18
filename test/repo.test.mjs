@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
  * 这里让它们进回归网——改名/删文件会直接红。
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const read = (rel) => fs.readFileSync(path.join(root, rel), "utf8");
+const read = (rel) => fs.readFileSync(path.join(root, rel), "utf8").split("\r\n").join("\n");
 
 test("repo: test entry, CI and docs stay wired together", () => {
   const pkg = JSON.parse(read("package.json"));
@@ -44,8 +44,10 @@ test("repo: test entry, CI and docs stay wired together", () => {
   assert.ok(readme.includes("AGENTS.md"), "README links AGENTS.md");
   assert.ok(readme.includes("SECURITY.md"), "README links SECURITY.md");
   assert.ok(fs.existsSync(path.join(root, "test/helpers/harness.mjs")));
-  // CI 声明的 Node 版本要覆盖 engines 的下限。
-  assert.match(ci, /"20"/);
+  // pnpm 11 要求 Node >= 22.13，所以矩阵从 22 起。
+  assert.match(ci, /"22"/);
+  assert.match(ci, /"24"/);
+  assert.match(String(pkg.engines.node), /22\.13/);
 });
 
 test("repo: agents guidance keeps the load-bearing rules", () => {

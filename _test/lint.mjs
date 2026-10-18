@@ -88,6 +88,13 @@ if (process.platform === 'win32') {
   }
 }
 
+// 5b) 行尾约定写进 .gitattributes，检出时自动还原（否则 Linux 上 CRLF 规则无法满足）
+const attrsPath = path.join(root, '.gitattributes');
+const attrs = fs.existsSync(attrsPath) ? fs.readFileSync(attrsPath, 'utf8') : '';
+for (const needle of ['*.ps1 text eol=crlf', 'README.md text eol=crlf', 'lib/features/steward/http.js text eol=crlf']) {
+  if (!attrs.includes(needle)) fail('.gitattributes must declare: ' + needle);
+}
+
 // 6) 误生成的垃圾目录
 for (const name of ['%SystemDrive%', 'undefined']) {
   if (fs.existsSync(path.join(root, name))) fail('stray directory in repo root: ' + name);
