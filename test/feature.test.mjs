@@ -287,3 +287,17 @@ test("modules can be created, edited, deleted and reset from the panel", async (
   assert.ok(list.length >= 5, "builtin modules restored");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
+
+test("every registered tool renders a content block array", () => {
+  // DSH defineTool 的 render(args, value) 必须回数组；回单个对象会让调用侧
+  // 在 content.some(...) 处炸掉（steward_* 五个工具曾经全中，堆工具用的是数组所以没暴露）。
+  const m = mount();
+  assert.equal(m.tools.length, 9);
+  for (const t of m.tools) {
+    const blocks = t.output.render({}, { text: "hello" });
+    assert.ok(Array.isArray(blocks), t.name + " render returns an array");
+    assert.equal(blocks[0].type, "text", t.name + " block type");
+    assert.equal(blocks[0].text, "hello", t.name + " block text");
+  }
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
