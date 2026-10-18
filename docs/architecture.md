@@ -44,6 +44,7 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
     lib/core/zstd.js             拼接式 zstd 容器按帧读取（解析帧头/解压）
     lib/features/index.js        FEATURES 登记表（新增功能只改这里 + 新目录）
     lib/features/heap-guard/     首个功能（宿主逻辑、面板 HTML、采样器、瘦身、快照、bili、会话名）
+lib/features/steward/        大内总管 P0：事件总线 / 账本 / 模块路由 / 健康采样 / 只读面板（详见 steward-design.md）
     lib/panel.js                 工具包外壳页（左功能卡片 + 右 iframe）
     lib/client.js                客户端入口：注册左侧栏面板、右侧 tab、会话头 chip、设置页
     bin/slim.mjs                 会话瘦身子进程（L1/L2/L3）

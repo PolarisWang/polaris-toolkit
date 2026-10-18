@@ -1,7 +1,7 @@
 # Polaris Toolkit
 
 一个 DSH（DeepSeek Harness）**多功能工具包**插件。Polaris Toolkit 是入口包，
-下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制），
+下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制）与 **Steward**（大内总管：观察全部 agent、归类到模块、形成待决信号；P0 只读，设计见 [docs/steward-design.md](docs/steward-design.md)），
 后续新增功能只加 feature，不动入口。
 
 - 入口：左侧栏 **Polaris Toolkit**（右侧栏 tab 暂未使用，见"设计取舍"）
@@ -136,6 +136,21 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 
 ---
 
+## 4.5 Steward（大内总管，P0）
+
+当前是**只读观察层**：把宿主里所有 agent 的状态、会话名、静默时长、待答提问收进账本，按模块（ev / cb2 / il2cpp / dsh / unassigned）归类，产生 signal。它**不做**任何动作——不代答、不 steer、不发消息。
+
+- 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面；数据 5 秒自刷新。
+- 事件来源：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、`session/created|disposed|event|title`。
+- 对账：每 5 秒 `ctx.agents.list()` 同步一次，补偿宿主「只在状态变化时才发事件」的盲区；running 但 8 分钟无事件 → `stalled` 信号。
+- 待答提问：`userQuestions.continued(agent)`（宿主硬约束：只能查 root agent）。
+- 路由：pin（面板 / `POST api/pin` 手工钉）→ 工作区前缀 → 标题正则 → unassigned；LLM 兜底留到 P1。
+- journal：`features/steward/journal-YYYYMMDD.jsonl`，攒批落盘（2 秒 / 256 KB）。
+
+为什么先只读：总管一旦能动手，就必须先有工作流引擎的幂等键与租约，否则「重试一次」可能给同一个 agent 发两遍消息。顺序不能倒（见 docs/steward-design.md 第 6 章）。
+
+---
+
 ## 5. 工具（agent 侧）
 
 装了插件后，工具会注册进 DSH 的工具表，agent 也可以直接调用：
@@ -146,6 +161,7 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 | heap_slim | 瘦身会话；scope="all" 时批量（受 maxPerClick 限制）；也可传 sessionId |
 | heap_snapshot | 写一份 V8 堆快照并返回路径 |
 | heap_bili | 读/写 bili 预算（max、residentMaxMB、warmMax、warmMaxBytes、gc.enabled） |
+| steward_observe | 只读快照：每个 agent 的模块归属 / 状态 / 静默时长 / 待答提问 / 最新信号 |
 
 ---
 
@@ -199,6 +215,7 @@ autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、max
     features/heap-guard/slim-backup-*/ 每次瘦身前的原文件备份
     features/heap-guard/snapshots/    V8 堆快照
     features/heap-guard/titles.json   会话名缓存（按会话 id，带 mtime/size 校验）
+    features/steward/journal-YYYYMMDD.jsonl  总管观察日志（按天滚动，可重放重建内存索引）
 
 瘦身档位（bin/slim.mjs）：
 

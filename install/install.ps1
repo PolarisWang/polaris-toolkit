@@ -132,6 +132,15 @@ if (-not $NoPnpm) {
 }
 
 if ($pnpmCmd) {
+  # pnpm 按 name@version 缓存 injected 副本：版本号没变时它直接复用上一份拷贝，
+  # 仓库里新增/修改的文件根本进不了 node_modules（症状：面板和代码还是上一版）。
+  # 所以每次安装前先删掉副本；含 reparse point 的目录一律拒绝删除。
+  $destCopy = Join-Path $profileDir ('node_modules\' + $pkgName)
+  if (Test-Path -LiteralPath $destCopy) {
+    $links = @(Get-ChildItem -LiteralPath $destCopy -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint })
+    if ($links.Count -gt 0) { throw ('refusing to delete ' + $destCopy + ': it contains ' + $links.Count + ' reparse point(s); remove them by hand first') }
+    Remove-Item -LiteralPath $destCopy -Recurse -Force
+  }
   $storeArgs = @()
   $mods = Join-Path $profileDir 'node_modules\.modules.yaml'
   if (Test-Path -LiteralPath $mods) {

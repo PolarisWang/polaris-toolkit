@@ -690,3 +690,28 @@ LLM 结果 <0.6 → 仍归 unassigned，但记 candidate 供你一键确认。
 4. 通知通道首版：lark-cli（推荐，已装 1.0.72）/ 自定义机器人 webhook / 双向卡片。
 5. 动作默认档：L1（推荐）/ L2 / 白名单 L3。
 6. 模块清单确认：ev、cb2、il2cpp、dsh、unassigned；各自 host。
+
+---
+
+## 17. P0 实现状态（2026-10-18）
+
+已落地（`lib/features/steward/`）：
+
+| 文件 | 作用 | 状态 |
+| --- | --- | --- |
+| `index.js` | feature 入口：Config/settings/actions/setup/action/status、5 条 API 路由、`steward_observe` 工具 | 完成 |
+| `core/store.js` | 内存账本（agents/signals/actions）+ 追加式 `journal-YYYYMMDD.jsonl`（攒批 2s / 256KB，按天滚动） | 完成 |
+| `core/bus.js` | 13 类宿主事件订阅，全部 handler 本地吞异常 | 完成 |
+| `sources/agents.js` | `ctx.agents.list()` 每 5s 对账 + `userQuestions.continued()` 待答提问 + `stalled` 合成 | 完成 |
+| `sources/titles.js` | `sessionQuery.readTitleSnapshots` 会话名缓存（15s TTL，失败降级为空） | 完成 |
+| `modules.js` | 模块定义 + 路由（pin → 工作区前缀 → 标题正则 → unassigned） | 完成 |
+| `health.js` | 堆用量 / 事件循环延迟（`monitorEventLoopDelay`）/ 崩溃日志统计（30s 缓存） | 完成 |
+| `panel.js` | 只读面板：宿主结论 → 模块卡片 → agent 明细 → 信号流，5s 自刷新 | 完成 |
+
+与设计文档的偏差（有意为之，按依赖顺序推进）：
+
+1. **没有 SQLite**：P0 用 JSONL 作为唯一真相、内存 Map 作投影；5.1 的 12 张表在 P1 引入工作流引擎时一次建齐，避免先做一遍 schema 再迁移。
+2. **没有 LLM 路由**：C1 决策是「规则优先 + LLM 兜底」，兜底要等 P3 的总管会话存在后才接，否则要为一个还没身份的分类器先付一份 preset。
+3. **没有动作**：动作需要 6 章的幂等键与租约，P0 一律只读；面板里的按钮只有「强制采样 / 落盘 journal」。
+
+P1 入口条件：P0 在真实宿主上跑满 24h，确认 journal 可重放、`stalled` 无假阳性、面板不拖慢 GUI（面板轮询是 5s 一次 `api/state`，只读内存）。
