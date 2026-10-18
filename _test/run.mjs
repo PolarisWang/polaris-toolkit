@@ -61,11 +61,14 @@ function fakeRes() {
   };
 }
 
+let TOKEN = "";
+
 function fakeReq(method, url, body) {
   const req = new Readable({ read() {} });
   req.method = method;
   req.url = url;
   req.headers = { host: "127.0.0.1:19387" };
+  if (TOKEN !== "") req.headers["x-polaris-token"] = TOKEN;
   if (body !== undefined) req.push(Buffer.from(JSON.stringify(body), "utf8"));
   req.push(null);
   return req;
@@ -97,6 +100,8 @@ const result = mountToolkit(ctx, { features: { "heap-guard": { intervalSec: 30 }
 assert.deepEqual(result.features, ["heap-guard", "steward"], "both features mounted in order");
 assert.equal(routes.length, 3, "toolkit + two feature routes");
 assert.equal(tools.length, 9, "nine agent tools");
+
+TOKEN = result.token;
 
 const toolkit = routes.filter((r) => r.path === "/__polaris")[0].handler;
 const feature = routes.filter((r) => r.path === "/__polaris/heap-guard")[0].handler;
@@ -200,7 +205,7 @@ assert.ok(typeof observed.text === "string" && observed.text.length > 0, "stewar
 const file = path.join(stateDir(), "settings.json");
 assert.ok(fs.existsSync(file), "settings file written: " + file);
 const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
-assert.equal(onDisk["heap-guard"].slimLevel, 2);
+assert.equal(onDisk.d["heap-guard"].slimLevel, 2, "settings envelope v1");
 
 // 13. steward: 事件总线 -> 账本 -> 路由 -> 面板
 const steward = routes.filter((r) => r.path === "/__polaris/steward")[0].handler;

@@ -54,6 +54,7 @@ function mount(overrides) {
     displayName: "Polaris Toolkit",
     features: FEATURES
   });
+  TOKEN = result.token;
   const handler = (name) => env.routes.filter((r) => r.path === "/__polaris/" + name)[0].handler;
   const toolkit = env.routes.filter((r) => r.path === "/__polaris")[0].handler;
   return { ...env, result, handler, toolkit };
@@ -67,11 +68,14 @@ function fakeRes() {
   };
 }
 
+let TOKEN = "";
+
 function fakeReq(method, url, body) {
   const req = new Readable({ read() {} });
   req.method = method;
   req.url = url;
   req.headers = { host: "127.0.0.1:1" };
+  if (TOKEN !== "") req.headers["x-polaris-token"] = TOKEN;
   if (body !== undefined) req.push(Buffer.from(JSON.stringify(body), "utf8"));
   req.push(null);
   return req;

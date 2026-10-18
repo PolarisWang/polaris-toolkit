@@ -12,6 +12,7 @@
 #   @deepseek-ai/* 解析到本仓库目录而失败；injected 会在 node_modules\polaris-toolkit 放一份
 #   真实目录副本，同时仍算在依赖树里，pnpm 不会清理它。
 # -NoPnpm 退回旧的「手工复制」方式（仅在没有可用 pnpm 时兜底，不推荐）。
+# 更推荐的入口: node bin\polaris.mjs install    （装完会自动跑 doctor 复核）
 # 以后新增 feature 不需要改这个脚本，只要在 lib/features/index.js 里注册。
 #requires -Version 5.1
 [CmdletBinding()]
@@ -173,12 +174,33 @@ else {
   }
 }
 
-# 3) 校验安装结果
+# 3) 校验安装结果（真正的断言集合在 bin/polaris.mjs doctor 里，这里只做最粗的两条）
 $dest = Join-Path $profileDir ('node_modules\' + $pkgName)
 if (-not (Test-Path -LiteralPath (Join-Path $dest 'lib\index.js'))) { throw ('install produced no plugin entry: ' + $dest + '\lib\index.js') }
 if (-not (Test-Path -LiteralPath (Join-Path $dest 'cordis.patch.yml'))) { throw ('install produced no bundle patch: ' + $dest + '\cordis.patch.yml') }
 $n = (Get-ChildItem -LiteralPath $dest -Recurse -File | Measure-Object).Count
 Write-Host ('installed ' + $n + ' files -> ' + $dest)
+
+# 3.1) 装机记录：doctor、面板页脚都靠它回答"哪一版 / 什么时候 / 从哪个仓库装的"
+$stateRoot = Join-Path $userHome '.dsh\polaris-toolkit'
+New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
+$recordVersion = '0.0.0'
+try { $recordVersion = [string]((Get-Manifest (Join-Path $pkgRoot 'package.json')).version) } catch { }
+$recordMode = 'copy'
+if ($pnpmCmd) { $recordMode = 'pnpm' }
+$record = [ordered]@{
+  at       = (Get-Date).ToString('o')
+  version  = $recordVersion
+  repo     = $pkgRoot
+  profile  = $profileDir
+  files    = $n
+  mode     = $recordMode
+  node     = [string]$nodeExe
+  pnpm     = [string]$pnpmCmd
+}
+$recordFile = Join-Path $stateRoot 'install.json'
+[System.IO.File]::WriteAllText($recordFile, (ConvertTo-Json -InputObject $record -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+Write-Host ('install record -> ' + $recordFile)
 Write-Host ''
 Write-Host 'NEXT: restart DSH (quit from the tray/menu, then start it again).'
 Write-Host 'The host half is loaded at boot, so a page reload is not enough.'
@@ -187,3 +209,16 @@ Write-Host 'shows the Polaris Toolkit entry, and the panel lives at /__polaris/p
 Write-Host 'After editing this repository, re-run this script (or "pnpm install" in the profile)'
 Write-Host 'so the injected copy picks up the change.'
 Write-Host ('State: ' + (Join-Path $userHome '.dsh\polaris-toolkit'))
+
+# 4) 用同一套断言复核一次（doctor 只读；失败只提醒，不推翻已经装好的东西）
+$doctorNode = $nodeExe
+if (-not $doctorNode) {
+  $cand = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
+  if (Test-Path -LiteralPath $cand) { $doctorNode = $cand }
+}
+$polarisCli = Join-Path $pkgRoot 'bin\polaris.mjs'
+if ($doctorNode -and (Test-Path -LiteralPath $polarisCli)) {
+  Write-Host ''
+  & $doctorNode $polarisCli doctor --profile $profileDir
+  if ($LASTEXITCODE -ne 0) { Write-Warning ('doctor reported problems: run node ' + $polarisCli + ' doctor') }
+}
