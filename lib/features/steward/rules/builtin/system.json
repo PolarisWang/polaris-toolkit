@@ -102,16 +102,16 @@
   {
     "id": "host.crash.new",
     "version": 1,
-    "title": "出现新的崩溃日志",
+    "title": "本次启动后出现过崩溃日志",
     "severity": "critical",
-    "cooldownSec": 300,
+    "cooldownSec": 1800,
     "shadowHours": 0,
     "enabledByDefault": true,
     "when": "host/tick",
     "if": {
-      "gte": [
-        "crashLast24h",
-        1
+      "lt": [
+        "crashNewestAgeMin",
+        90
       ]
     },
     "actions": [
@@ -119,7 +119,7 @@
         "workflow": "wf.notify",
         "level": 1,
         "params": {
-          "text": "24 小时内出现崩溃日志"
+          "text": "本次启动后出现过崩溃日志（旧的崩溃归档不会重复提醒）"
         }
       }
     ]
