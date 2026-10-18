@@ -166,6 +166,26 @@ test("panel html contains the pyramid and the control buttons", async () => {
   assert.ok(res.body.includes("飞书通知"), "lark toggle");
   assert.ok(res.body.includes("待批"), "approvals section");
   assert.ok(res.body.includes("工作流"), "runs section");
+
+  // 金字塔：待批（要你动手）在控制条之上，控制条在流程/模块之上，明细与记录沉到底部，维护收进折叠区。
+  const at = (needle) => {
+    const i = res.body.indexOf(needle);
+    assert.ok(i >= 0, "missing section: " + needle);
+    return i;
+  };
+  const order = ["需要你处理", "控制", "正在发生", "Agent 明细", "记录", "维护"];
+  const positions = order.map(at);
+  for (let i = 1; i < positions.length; i += 1) {
+    assert.ok(positions[i - 1] < positions[i], order[i - 1] + " must sit above " + order[i]);
+  }
+  assert.ok(at("id=\"approvals\"") < at("id=\"btn-auto\""), "approvals come before the control bar");
+  assert.ok(at("id=\"mods\"") > at("id=\"runs\""), "modules are reference detail under the runs");
+  assert.ok(res.body.includes('id="attn-count"'), "attention counter");
+  assert.ok(res.body.includes('id="runs-count"'), "running workflow counter");
+  assert.ok(res.body.includes('id="agents-count"'), "agent counter");
+  assert.ok(res.body.includes('id="mods-count"'), "module counter");
+  assert.ok(res.body.includes('class="vword'), "verdict word in the hero");
+  assert.ok(res.body.includes('class="kpis"'), "kpi strip in the hero");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
