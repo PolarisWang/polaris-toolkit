@@ -1,10 +1,8 @@
 name: CI
 
-# 评审 P2-C：本地与 CI 跑同一条命令（node _test/all.mjs 自己枚举测试文件，
-# 免得 Windows shell 的 glob 与 Linux 不一致）。
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -13,20 +11,26 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        node: [ "20", "22", "24" ]
-    name: node ${{ matrix.node }}
+        os: [ubuntu-latest, windows-latest]
+        node: ["20", "22", "24"]
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Install (dev deps pin the host peer packages)
+        run: pnpm install --frozen-lockfile
       - name: Unit tests + smoke
-        run: npm test
+        run: pnpm test
       - name: Coverage gate
-        # 覆盖率门槛用到 Node 22.8+ 的 --test-coverage-* 标志，只跑一条腿。
-        if: matrix.node == '22'
-        run: npm run test:coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        run: pnpm run test:coverage

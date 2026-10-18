@@ -6,10 +6,15 @@
 
 ## 一条命令跑完自测
 
-    node _test/all.mjs              # 16 个单测文件 + 假宿主冒烟（跨平台，CI 用的就是它）
+    node _test/all.mjs              # 18 个单测文件 + 假宿主冒烟（会先跑 _test/lint.mjs）
     node _test/all.mjs --coverage   # 追加覆盖率门槛（Node 22.8+：行 60 / 函数 50 / 分支 50）
+    node _test/lint.mjs             # 仓库卫生 + 语法检查（BOM / CRLF / files 字段 / 锁文件）
     node bin/polaris.mjs doctor     # 装机体检：清单 BOM、注入式依赖、bundle patch、install.json、代码漂移
     node bin/polaris.mjs install    # 装进 profile（会写清单、跑 pnpm、更新 install.json）
+    node bin/polaris.mjs token      # 打印写接口令牌（面板按钮也能复制）
+    node bin/polaris.mjs pack --dry-run   # 打包清单（按 package.json files）
+    node bin/polaris.mjs rollback   # 用安装前备份还原 profile 的 package.json
+    node bin/polaris.mjs release --dry-run  # 发布闸门：版本 / CHANGELOG / LICENSE / 干净工作树 / tag
 
 改了 host 半边（lib/**, cordis.patch.yml）必须重启宿主才生效：Node 不会重新 import 已装载的模块。
 插件会在面板和 `GET /api/features` 的 `install.stale` 里提示"磁盘比进程新"，doctor 的

@@ -1,7 +1,7 @@
 # Polaris Toolkit
 
 一个 DSH（DeepSeek Harness）**多功能工具包**插件。Polaris Toolkit 是入口包，
-下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制）与 **Steward**（大内总管：观察全部 agent、归类到模块、能力平面判定命中后由该主管的决策树决定动作，动作/审批/上报全链路；设计见 [docs/steward-design.md](docs/steward-design.md)），
+下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制）与 **Steward**（大内总管：观察全部 agent、归类到模块、能力平面判定命中后由该主管的决策树决定动作，动作/审批/上报全链路；设计见 [docs/design-capability-plane.md](docs/design-capability-plane.md)），
 后续新增功能只加 feature，不动入口。
 
 - 入口：左侧栏 **Polaris Toolkit**（右侧栏 tab 暂未使用，见"设计取舍"）
@@ -86,28 +86,52 @@ Heap Guard 做三件事：
             actuators/      notify / prompt / answer 三个动作出口
             channels/       desktop（内存环形）、feishu（lark-cli 子进程）
             federation/     信封 envelope.js（HMAC）与 peer.js（白名单 / 去重 / 心跳）
-      bin/polaris.mjs       运维入口：node bin/polaris.mjs install | doctor | token | version
+      bin/polaris.mjs       运维入口：node bin/polaris.mjs install | doctor | token | pack | rollback | release | version
       bin/slim.mjs          独立瘦身脚本（子进程运行，可脱离插件单用）
       bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
       docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
-      docs/steward-design.md  大内总管团（D-δ）设计：联邦 / 工作流引擎 / 规则 / 会话与轮换
+      docs/steward-design.md  （历史）0.2 版 D-δ 总管团设计，已被 docs/design-capability-plane.md 取代
       docs/design-capability-plane.md  能力平面设计（能力=插件、编制=数据、决策树、路由、观测 trace/OTLP）
       docs/known-limits.md             已知限制清单（匿名读接口 / 重启生效 / 预算口径 / 联邦 等 9 条）
       AGENTS.md            给下一个改这个仓库的人或 agent 的约定（测试、格式地雷、交付动作）
-      .github/workflows/ci.yml   CI：Node 20/22/24 跑 npm test，22 再跑覆盖率门槛
+      LICENSE                MIT 许可
+      CHANGELOG.md           版本记录（Keep a Changelog）
+      SECURITY.md            安全策略与信任边界（报告漏洞 / 匿名读接口的取舍）
+      .editorconfig          跨编辑器格式约定（LF / UTF-8 / 2 空格；.ps1 用 CRLF）
+      pnpm-lock.yaml         锁文件（CI 与装机都用冻结锁文件）
+      .github/workflows/ci.yml   CI：Linux+Windows × Node 20/22/24，pnpm install --frozen-lockfile + pnpm test（22 再跑覆盖率门槛）
       skills/polaris-toolkit/SKILL.md  可安装的 skill：什么时候用哪个工具 / 哪个接口
       install/
         install.ps1         安装到 profile（注入式 file: 依赖 + pnpm install + 写 bundles + 清退旧包）
         uninstall.ps1       卸载（JSON 手术移除依赖/bundles，或 -Restore 还原备份）
-      _test/all.mjs         跨平台测试入口（枚举 test/*.test.mjs + 冒烟；--coverage 加覆盖率门槛）
+      test/*.test.mjs       node:test 单元 / 集成测试（18 个文件；pnpm test 跑完再跑冒烟）
       _test/run.mjs         离线冒烟（假 ctx，把整个包挂一遍，不连 DSH）
       test/*.test.mjs       node:test 单元 / 集成测试（16 个文件；npm test 跑完再跑冒烟）
       test/helpers/harness.mjs  共享脚手架：临时 HOME + 假 ctx + mount()/call()/json()
       test/panel.test.mjs   面板 vm 冒烟（document 垫片 + 真跑内联脚本 + fetch 打到假宿主）
+      test/client.test.mjs  客户端半边回归（vm 跑 lib/client.js：座席注册 / 面板地址 / 清理）
+      test/polaris-cli.test.mjs  CLI 闸门（pack --dry-run / rollback / release --dry-run）
 
 ---
 
 ## 3. 安装 / 升级 / 卸载
+
+**平台支持**：宿主半边（`lib/`）跨平台；**安装器（`install/install.ps1`、`polaris install`）目前只支持 Windows**
+（它要改 profile 的 package.json 并调宿主自带的 pnpm；`bin/polaris.mjs` 在非 Windows 上会直接拒绝并给出提示）。
+macOS / Linux 请手工登记依赖，步骤与 install.ps1 等价：
+
+    1. 编辑 <profile>/package.json（默认 %USERPROFILE%/.dsh/profiles/desktop）：
+         dependencies["polaris-toolkit"] = "file:/绝对路径/polaris-toolkit"
+         dependenciesMeta["polaris-toolkit"].injected = true
+         dsh.profile.bundles 追加 "polaris-toolkit"（只能出现一次）
+    2. 在该 profile 目录里跑一次 pnpm install（注入式副本由 pnpm 维护）
+    3. node bin/polaris.mjs doctor --profile <profile> 应全部 ok
+    4. 重启 DSH（宿主半边只在启动时加载）
+
+`doctor` 与 `token` 跨平台可用，`install` / `rollback` / `pack` 里走 PowerShell 的部分仅 Windows。
+
+安全策略与信任边界（写接口要令牌、读接口按设计匿名）见 [SECURITY.md](SECURITY.md)。
+
 
 在仓库根目录执行（PowerShell 5.1 即可）：
 
@@ -134,6 +158,10 @@ node_modules 目录挪进 .ignored\；写成 injected 的 file: 依赖后，pnpm
     node bin/polaris.mjs doctor          # 只读体检：清单/注入副本/bundles/版本漂移/端口
     node bin/polaris.mjs doctor --json   # 给脚本用
     node bin/polaris.mjs version
+    node bin/polaris.mjs pack             # 按 files 字段打 tgz 到 dist/
+    node bin/polaris.mjs pack --dry-run   # 只列出会打进去的文件
+    node bin/polaris.mjs rollback         # 用 install 前的 package.json.bak 还原 profile
+    node bin/polaris.mjs release --dry-run  # 发布闸门：版本 / CHANGELOG / LICENSE / 工作树 / tag
 
 doctor 逐项给出 ok/warn/fail 与修复建议，有 fail 时退出码非 0：检查 profile 的 package.json 有无 BOM、
 依赖是否仍是 file: 且指向本仓库、dependenciesMeta 是否 injected、bundles 是否含且**只含一次**本包
@@ -159,7 +187,7 @@ APPDATA / TEMP / TMP / SystemRoot / SystemDrive / ProgramData，再按绝对路�
 （-Restore <备份> 可还原某次安装前的 package.json；状态数据保留在 %USERPROFILE%\.dsh\polaris-toolkit，
 可自行删除）。
 
-_test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin / docs / cordis.patch.yml / README.md）。
+_test/ 与 node_modules 不会进入注入副本（files 字段列 lib / bin / docs / install / cordis.patch.yml / README.md / AGENTS.md / skills / LICENSE / CHANGELOG.md）。
 
 ---
 
@@ -201,7 +229,7 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 ## 4.5 Steward（大内总管）
 
 一条链：**观察 → 归类 → 能力判定 → 该主管的决策树 → 动作 / 审批 / 上报**。默认是"只通知"（L1），
-任何真正的副作用都要显式打开。设计依据见 [docs/steward-design.md](docs/steward-design.md)。
+任何真正的副作用都要显式打开。设计依据见 [docs/design-capability-plane.md](docs/design-capability-plane.md)。
 
 - 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面，5 秒自刷新（页面隐藏时停）。自上而下按"要不要现在动手"分层：
   1. 结论条：一个字的状态（平稳 / 偏高 / 吃紧，按堆占用 65% / 80% 分档）+ 一句话（几个 agent 在跑、
@@ -302,7 +330,7 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
   （`api/state` 的 `degraded` 会列出来），绝不让插件加载失败。
 
 为什么动作必须晚于引擎：总管一旦能动手，就必须先有幂等键与租约，否则"重试一次"可能给同一个 agent
-发两遍消息。顺序不能倒（见 docs/steward-design.md 第 6 章）。
+发两遍消息。顺序不能倒（见 docs/design-capability-plane.md 第 5 章：编排器管线）。
 
 ---
 

@@ -75,18 +75,19 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
       federation/{envelope,peer}.js                     HMAC 信封与白名单命令
     lib/panel.js                 工具包外壳页（左功能卡片 + 右 iframe）
     lib/client.js                客户端入口：注册左侧栏面板、右侧 tab、会话头 chip、设置页
-    bin/polaris.mjs              运维入口：install / doctor / token / version（install.ps1 是它的薄壳）
+    bin/polaris.mjs              运维入口：install / doctor / token / pack / rollback / release / version（install.ps1 是它的薄壳）
     bin/slim.mjs                 会话瘦身子进程（L1/L2/L3）
     bin/titles.mjs               会话名扫描子进程（有界读帧）
     install/install.ps1          安装到 %USERPROFILE%\.dsh\profiles\<profile>（注入式 file: 依赖 + pnpm install + 写 bundles）
-    _test/all.mjs                跨平台测试入口：枚举 test/*.test.mjs + 冒烟（--coverage 加门槛）
+    _test/all.mjs                跨平台测试入口：先跑 _test/lint.mjs 卫生检查，再枚举 test/*.test.mjs + 冒烟（--coverage 加门槛）
     _test/run.mjs                离线冒烟（假 ctx，把整包挂一遍：路由/工具/设置/面板）
     test/*.test.mjs              node:test 单测与集成测试（16 个文件；含 panel.test.mjs 面板 vm 冒烟）
     test/helpers/harness.mjs     共享脚手架：临时 HOME + 假 ctx + mount()/call()/json()
     skills/polaris-toolkit/SKILL.md  可安装 skill：能力使用的入口说明
     docs/known-limits.md         已知限制（匿名读接口、重启生效、预算口径、联邦等 9 条）
+    SECURITY.md                  安全策略 / 信任边界（写接口令牌、读接口匿名、漏洞报告渠道）
     AGENTS.md                    仓库约定（测试命令、格式地雷、交付动作）
-    .github/workflows/ci.yml     CI：Node 20/22/24 跑 npm test，22 跑覆盖率门槛
+    .github/workflows/ci.yml     CI：Linux+Windows × Node 20/22/24，pnpm install --frozen-lockfile + pnpm test（22 跑覆盖率门槛）
 
 ## 3. feature 契约
 
@@ -293,9 +294,12 @@ route、collect、digest、tool.*、session、chat 免费；escalate / act / sli
 ## 8. 自测
 
     cd D:\agent\polaris-toolkit
-    node _test/all.mjs            # 16 个单测文件 + 冒烟
+    node _test/all.mjs            # 18 个单测文件 + 假宿主冒烟（先跑 lint）
     node _test/all.mjs --coverage # 追加覆盖率门槛（Node 22.8+：行 60 / 函数 50 / 分支 50）
     node bin/polaris.mjs doctor   # 装机体检（含 install-drift 代码漂移）
+    node bin/polaris.mjs token    # 打印写接口令牌
+    node bin/polaris.mjs pack --dry-run   # 打包清单（files 字段）
+    node bin/polaris.mjs rollback # 用备份还原 profile 的 package.json
 
 假 ctx 覆盖 `logger/effect/webServer.register/tools.register/agents/ctx.get`，断言路由数、
 工具名、动作表、设置往返（含 toggle）、面板 HTML 关键片段、404 与围栏行为。

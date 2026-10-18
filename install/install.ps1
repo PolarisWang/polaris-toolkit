@@ -169,11 +169,11 @@ else {
   $dest = Join-Path $profileDir ('node_modules\' + $pkgName)
   if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
   New-Item -ItemType Directory -Path $dest -Force | Out-Null
-  foreach ($f in @('package.json', 'cordis.patch.yml', 'README.md')) {
+  foreach ($f in @('package.json', 'cordis.patch.yml', 'README.md', 'LICENSE', 'CHANGELOG.md', 'AGENTS.md')) {
     $src = Join-Path $pkgRoot $f
     if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $dest $f) -Force }
   }
-  foreach ($d in @('lib', 'bin', 'docs')) {
+  foreach ($d in @('lib', 'bin', 'docs', 'skills')) {
     $src = Join-Path $pkgRoot $d
     if (-not (Test-Path -LiteralPath $src)) {
       if ($d -eq 'lib' -or $d -eq 'bin') { throw ('missing package directory: ' + $src) }

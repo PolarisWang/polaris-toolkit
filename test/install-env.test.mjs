@@ -27,7 +27,7 @@ function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "polaris-env-"));
 }
 
-test("doctor survives an almost empty environment", () => {
+test("doctor survives an almost empty environment", { skip: process.platform !== "win32" ? "install 只针对 Windows" : false }, () => {
   const cwd = tmpDir();
   try {
     const res = spawnSync(process.execPath, [CLI, "doctor", "--json"], {

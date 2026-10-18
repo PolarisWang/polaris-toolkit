@@ -5,6 +5,9 @@
  *   node bin/polaris.mjs install [--profile <dir>] [--no-bundles] [--no-pnpm] [--keep-old]
  *   node bin/polaris.mjs doctor  [--profile <dir>] [--json] [--quiet]
  *   node bin/polaris.mjs token   [--path]
+ *   node bin/polaris.mjs pack    [--out <dir>] [--dry-run]
+ *   node bin/polaris.mjs rollback [--profile <dir>]
+ *   node bin/polaris.mjs release [--dry-run] [--allow-dirty] [--skip-tests] [--force-tag]
  *   node bin/polaris.mjs version | help
  *
  * 为什么要有它：以前"装好了没 / 装的是哪一版 / 仓库改了但 node_modules 里还是旧的"
@@ -15,6 +18,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -357,10 +361,166 @@ function install(opts) {
   return bad === 0 ? 0 : 1;
 }
 
+// ---------- pack / rollback / release ----------
+
+function pnpmPath() {
+  const fromEnv = process.env.POLARIS_PNPM;
+  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
+  const guess = path.join(home(), "AppData", "Local", "Programs", "DeepSeek Harness", "resources", "runtime", "primary-runtime", "dependencies", "pnpm", "bin", "pnpm.cjs");
+  return fs.existsSync(guess) ? guess : undefined;
+}
+
+/** git 可能不在 PATH 里（尤其从精简环境启动时），先找常见安装位置。 */
+function gitPath() {
+  const fromEnv = process.env.POLARIS_GIT;
+  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
+  const candidates = [
+    "C:/Program Files/Git/cmd/git.exe",
+    "C:/Program Files/Git/bin/git.exe",
+    path.join(home(), "AppData", "Local", "Programs", "Git", "cmd", "git.exe")
+  ];
+  for (const candidate of candidates) if (fs.existsSync(candidate)) return candidate;
+  return "git";
+}
+
+function walk(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walk(p));
+    else out.push(p);
+  }
+  return out;
+}
+
+function manifestFiles() {
+  const pkg = readPkg(REPO);
+  const entries = pkg === undefined || !Array.isArray(pkg.files) ? [] : pkg.files;
+  const files = [];
+  for (const entry of entries) {
+    const abs = path.join(REPO, String(entry));
+    if (!fs.existsSync(abs)) continue;
+    if (fs.statSync(abs).isDirectory()) files.push(...walk(abs));
+    else files.push(abs);
+  }
+  return files;
+}
+
+function sha256(file) {
+  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+/** 打包成可发布的 tarball（评审 P1-8）：走 pnpm pack，按 package.json 的 files[] 收文件。 */
+function pack(opts) {
+  const pkg = readPkg(REPO);
+  const version = String(pkg === undefined || pkg.version === undefined ? "0.0.0" : pkg.version);
+  const outDir = opts.outDir === undefined ? path.join(REPO, "dist") : path.resolve(String(opts.outDir));
+  const files = manifestFiles();
+  const bytes = files.reduce((sum, f) => sum + fs.statSync(f).size, 0);
+  const target = path.join(outDir, PKG + "-" + version + ".tgz");
+  if (opts.dryRun === true) {
+    const lines = [
+      "pack --dry-run  " + PKG + "@" + version,
+      "  files   " + files.length + " (" + Math.round(bytes / 1024) + " KiB)",
+      "  target  " + target
+    ];
+    for (const f of files) lines.push("  " + path.relative(REPO, f));
+    lines.push("");
+    process.stdout.write(lines.join("\n"));
+    return 0;
+  }
+  const pnpm = pnpmPath();
+  if (pnpm === undefined) {
+    process.stderr.write("找不到 pnpm（设 POLARIS_PNPM 指向 pnpm.cjs）。\n");
+    return 1;
+  }
+  fs.mkdirSync(outDir, { recursive: true });
+  const r = spawnSync(process.execPath, [pnpm, "pack", "--pack-destination", outDir, "--config.strictDepBuilds=false"], { cwd: REPO, stdio: "inherit" });
+  if (r.status !== 0) return r.status === null ? 1 : r.status;
+  if (!fs.existsSync(target)) {
+    process.stderr.write("pnpm pack 结束但没有生成 " + target + "\n");
+    return 1;
+  }
+  process.stdout.write("packed  " + target + "\n  bytes  " + fs.statSync(target).size + "\n  sha256 " + sha256(target) + "\n");
+  return 0;
+}
+
+/** 回滚 profile 清单（评审 P1-8）：用 install.ps1 留下的备份覆盖回去。 */
+function rollback(opts) {
+  const profile = opts.profile === undefined ? defaultProfile() : path.resolve(String(opts.profile));
+  const manifest = path.join(profile, "package.json");
+  if (!fs.existsSync(profile)) {
+    process.stderr.write("profile 不存在：" + profile + "\n");
+    return 1;
+  }
+  const prefix = "package.json.before-polaris-toolkit-";
+  const backups = fs.readdirSync(profile)
+    .filter((n) => n.startsWith(prefix) && n.endsWith(".bak"))
+    .map((n) => path.join(profile, n))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  if (backups.length === 0) {
+    process.stderr.write("没有找到备份：" + path.join(profile, prefix + "*.bak") + "\n");
+    return 1;
+  }
+  fs.copyFileSync(backups[0], manifest);
+  process.stdout.write([
+    "restored " + manifest,
+    "  from   " + backups[0],
+    "  next   restart the DSH host (tray -> quit, then start again); the plugin stops loading.",
+    ""
+  ].join("\n"));
+  return 0;
+}
+
+/** 发布闸门（评审 P2-12）：版本、CHANGELOG、git 状态都对上才打 tag。 */
+function release(opts) {
+  const pkg = readPkg(REPO);
+  const version = String(pkg === undefined || pkg.version === undefined ? "" : pkg.version);
+  const tag = "v" + version;
+  const problems = [];
+  if (version === "") problems.push("package.json has no version");
+  const changelogFile = path.join(REPO, "CHANGELOG.md");
+  const changelog = fs.existsSync(changelogFile) ? String(fs.readFileSync(changelogFile, "utf8")) : "";
+  if (version !== "" && !changelog.includes(version)) problems.push("CHANGELOG.md has no entry for " + version);
+  if (!fs.existsSync(path.join(REPO, "LICENSE"))) problems.push("LICENSE is missing");
+  const git = gitPath();
+  const status = spawnSync(git, ["status", "--porcelain"], { cwd: REPO, encoding: "utf8" });
+  if (status.status !== 0) problems.push("git is unavailable (" + git + ") or this is not a git work tree");
+  else if (String(status.stdout).trim() !== "" && opts.allowDirty !== true) problems.push("git work tree is dirty (commit first, or pass --allow-dirty)");
+  const existing = spawnSync(git, ["tag", "-l", tag], { cwd: REPO, encoding: "utf8" });
+  if (existing.status === 0 && String(existing.stdout).trim() !== "" && opts.forceTag !== true) problems.push("tag " + tag + " already exists (pass --force-tag to move it)");
+  if (problems.length > 0) {
+    process.stderr.write("release blocked:\n  - " + problems.join("\n  - ") + "\n");
+    return 1;
+  }
+  if (opts.skipTests !== true) {
+    const tests = spawnSync(process.execPath, [path.join(REPO, "_test", "all.mjs")], { cwd: REPO, stdio: "inherit" });
+    if (tests.status !== 0) { process.stderr.write("release blocked: tests failed\n"); return tests.status === null ? 1 : tests.status; }
+  }
+  if (opts.dryRun === true) {
+    process.stdout.write("release check ok  " + PKG + "@" + version + " -> " + tag + " (dry run, no tag created)\n");
+    return 0;
+  }
+  const args = opts.forceTag === true ? ["tag", "-f", "-a", tag, "-m", PKG + " " + version] : ["tag", "-a", tag, "-m", PKG + " " + version];
+  const tagRun = spawnSync(git, args, { cwd: REPO, stdio: "inherit" });
+  if (tagRun.status !== 0) return tagRun.status === null ? 1 : tagRun.status;
+  process.stdout.write([
+    "tagged " + tag,
+    "",
+    "publish with:",
+    "  git push origin main",
+    "  git push origin " + tag,
+    "  (or: gh release create " + tag + " --notes-file CHANGELOG.md)",
+    ""
+  ].join("\n"));
+  return 0;
+}
+
 // ---------- CLI ----------
 
+
 function parseArgs(argv) {
-  const out = { command: argv[0] === undefined ? "help" : String(argv[0]), profile: undefined, json: false, quiet: false, noBundles: false, noPnpm: false, keepOld: false, pathOnly: false };
+  const out = { command: argv[0] === undefined ? "help" : String(argv[0]), profile: undefined, outDir: undefined, json: false, quiet: false, noBundles: false, noPnpm: false, keepOld: false, pathOnly: false, dryRun: false, allowDirty: false, skipTests: false, forceTag: false };
   for (let i = 1; i < argv.length; i += 1) {
     const a = String(argv[i]);
     if (a === "--profile" || a === "-p") { out.profile = argv[i + 1]; i += 1; continue; }
@@ -371,6 +531,12 @@ function parseArgs(argv) {
     if (a === "--no-pnpm") { out.noPnpm = true; continue; }
     if (a === "--keep-old") { out.keepOld = true; continue; }
     if (a === "--path" || a === "--path-only") { out.pathOnly = true; continue; }
+    if (a === "--out") { out.outDir = argv[i + 1]; i += 1; continue; }
+    if (a.startsWith("--out=")) { out.outDir = a.slice(6); continue; }
+    if (a === "--dry-run") { out.dryRun = true; continue; }
+    if (a === "--allow-dirty") { out.allowDirty = true; continue; }
+    if (a === "--skip-tests") { out.skipTests = true; continue; }
+    if (a === "--force-tag") { out.forceTag = true; continue; }
   }
   return out;
 }
@@ -388,6 +554,12 @@ function help() {
     "      有问题时退出码为 1，方便脚本判断。",
     "  polaris token [--path]",
     "      打印写操作令牌（x-polaris-token）；--path 只打印文件路径。",
+    "  polaris pack [--out <dir>] [--dry-run]",
+    "      按 package.json 的 files[] 打出 tarball（默认 dist/）。--dry-run 只列清单。",
+    "  polaris rollback [--profile <dir>]",
+    "      用最近一次 install 留下的 package.json 备份恢复 profile 清单（然后重启宿主）。",
+    "  polaris release [--dry-run] [--allow-dirty] [--skip-tests] [--force-tag]",
+    "      发布闸门：校对版本/CHANGELOG/git 状态并跑测试，然后打带注释的 v<version> tag。",
     "  polaris version | help",
     ""
   ].join("\n"));
@@ -397,6 +569,9 @@ const opts = parseArgs(process.argv.slice(2));
 if (opts.command === "install") process.exit(install(opts));
 if (opts.command === "doctor") process.exit(render(doctor(opts), opts) === 0 ? 0 : 1);
 if (opts.command === "token") process.exit(token(opts));
+if (opts.command === "pack") process.exit(pack(opts));
+if (opts.command === "rollback") process.exit(rollback(opts));
+if (opts.command === "release") process.exit(release(opts));
 if (opts.command === "version" || opts.command === "--version" || opts.command === "-v") {
   const pkg = readPkg(REPO);
   process.stdout.write(String(pkg === undefined || pkg.version === undefined ? "?" : pkg.version) + "\n");

@@ -5,6 +5,11 @@
 - 归属：polaris-toolkit / feature `steward`
 - 前序：`docs/architecture.md`（装载链、feature 契约、硬约束）
 
+> **已被取代（2026-10-18）**：本文是 0.2 版「设计定稿，待开工」的 D-δ 多会话总管团设计；其中的
+> 「规则优先 + LLM 兜底」「联邦双主」「配额池」等方案**没有**按此实现，rules 引擎已经删除。
+> 当前实现见 [docs/design-capability-plane.md](design-capability-plane.md)：能力=插件数据、编制=数据记录、
+> 决策只存在于主管自己的决策树上。本文只作历史记录保留。
+
 ---
 
 ## 0. 决策记录

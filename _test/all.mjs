@@ -34,5 +34,6 @@ function run(command, argv) {
   if (out.status !== 0) process.exit(out.status === null ? 1 : out.status);
 }
 
+run(process.execPath, [path.join(here, "lint.mjs")]);
 run(process.execPath, args);
 run(process.execPath, [path.join(here, "run.mjs")]);

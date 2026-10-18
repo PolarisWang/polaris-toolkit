@@ -17,10 +17,23 @@ test("repo: test entry, CI and docs stay wired together", () => {
   assert.equal(pkg.scripts["test:coverage"], "node _test/all.mjs --coverage");
   assert.ok(fs.existsSync(path.join(root, "_test/all.mjs")), "_test/all.mjs exists");
 
+  assert.equal(pkg.scripts.lint, "node _test/lint.mjs");
+  assert.ok(fs.existsSync(path.join(root, "_test/lint.mjs")), "_test/lint.mjs exists");
+  assert.ok(fs.existsSync(path.join(root, "pnpm-lock.yaml")), "pnpm-lock.yaml is committed (CI uses --frozen-lockfile)");
+  assert.ok(pkg.peerDependencies["@deepseek-ai/schemastery"] !== undefined, "schemastery is a declared peer");
+  assert.ok(pkg.peerDependencies["@deepseek-ai/dsh-tools"] !== undefined, "dsh-tools is a declared peer");
+  assert.ok(pkg.devDependencies["@deepseek-ai/schemastery"] !== undefined, "schemastery is pinned for tests");
+  for (const rel of ["LICENSE", "CHANGELOG.md", "SECURITY.md", ".editorconfig"]) {
+    assert.ok(fs.existsSync(path.join(root, rel)), rel + " exists");
+  }
+
   const ci = read(".github/workflows/ci.yml");
-  assert.match(ci, /npm test/);
+  assert.match(ci, /pnpm test/);
+  assert.match(ci, /pnpm install --frozen-lockfile/);
   assert.match(ci, /test:coverage/);
   assert.match(ci, /matrix:/);
+  assert.match(ci, /ubuntu-latest/);
+  assert.match(ci, /windows-latest/);
 
   for (const rel of ["AGENTS.md", "docs/known-limits.md", "skills/polaris-toolkit/SKILL.md", "docs/design-capability-plane.md"]) {
     assert.ok(fs.statSync(path.join(root, rel)).size > 500, rel + " has content");
@@ -29,6 +42,7 @@ test("repo: test entry, CI and docs stay wired together", () => {
   const readme = read("README.md");
   assert.ok(readme.includes("docs/known-limits.md"), "README links known-limits");
   assert.ok(readme.includes("AGENTS.md"), "README links AGENTS.md");
+  assert.ok(readme.includes("SECURITY.md"), "README links SECURITY.md");
   assert.ok(fs.existsSync(path.join(root, "test/helpers/harness.mjs")));
   // CI 声明的 Node 版本要覆盖 engines 的下限。
   assert.match(ci, /"20"/);
