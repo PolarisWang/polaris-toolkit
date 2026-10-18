@@ -187,7 +187,7 @@ test("panel html contains the pyramid and the control buttons", async () => {
     assert.ok(i >= 0, "missing section: " + needle);
     return i;
   };
-  const order = ["需要你处理", "控制", "交办", "对话", "正在发生", "Agent 明细", "记录", "追查", "维护"];
+  const order = ['id="attn-count"', 'id="btn-auto"', 'id="tk-title"', 'id="chat-log"', 'id="runs"', 'id="stewards-count"', 'id="agents-count"', 'id="echoes"', 'id="traces"', 'id="doctor-count"', 'class="maint"'];
   const positions = order.map(at);
   for (let i = 1; i < positions.length; i += 1) {
     assert.ok(positions[i - 1] < positions[i], order[i - 1] + " must sit above " + order[i]);
@@ -215,6 +215,14 @@ test("panel html contains the pyramid and the control buttons", async () => {
   assert.ok(at('id="chat-log"') < at('id="runs"'), "chat sits above the reference sections");
   assert.ok(res.body.includes('class="vword'), "verdict word in the hero");
   assert.ok(res.body.includes('class="kpis"'), "kpi strip in the hero");
+  // P1 控制面：主管编制（含决策树编辑器）与体检页都在，且体检沉在追查之下、维护之上。
+  assert.ok(res.body.includes('id="stewards"'), "steward list");
+  assert.ok(res.body.includes('id="sw-editor"'), "steward editor");
+  assert.ok(res.body.includes('id="doctor"'), "doctor view");
+  assert.ok(res.body.includes('id="tr-pin"'), "pinned trace line");
+  assert.ok(at('id="stewards-count"') < at('id="agents-count"'), "stewards sit above the agent table");
+  assert.ok(at('id="traces"') < at('id="doctor-count"'), "doctor sits below the trace view");
+  assert.ok(at('id="doctor-count"') < at('class="maint"'), "doctor sits above the maintenance fold");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
@@ -413,4 +421,86 @@ test("ops console: chat, tasks, detail and policy routes", async () => {
   assert.equal(wrong.statusCode, 400);
 
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("capability plane control surface: stewards, routes, doctor, trace replay and export", async () => {
+  const m = mount();
+  const steward = m.handler("steward");
+  const get = async (p) => json(await call(steward, "GET", "/__polaris/steward" + p));
+  const post = async (p, body) => json(await call(steward, "POST", "/__polaris/steward" + p, body));
+  await new Promise((r) => setTimeout(r, 60));
+
+  // 编制：内置两条 + 每条的树/声带/装备都能读出来（面板编辑器要整条回写）。
+  const sw = await get("/api/stewards");
+  assert.equal(sw.ok, true);
+  assert.ok(sw.stewards.length >= 2, "builtin stewards listed");
+  const watch = sw.stewards.filter((s) => s.id === "watch")[0];
+  assert.ok(watch !== undefined, "watch steward present");
+  assert.ok(watch.tree !== undefined && watch.tree !== null, "tree is exposed for editing");
+  assert.deepEqual(watch.voice.mode, "virtual");
+  assert.ok(sw.builtin.some((s) => s.id === "watch"), "builtin roster reported");
+
+  // 路由矩阵：每个编制 × 每条能力都有 route + grant。
+  const rt = await get("/api/routes");
+  assert.equal(rt.ok, true);
+  assert.equal(rt.routes.default, "allow");
+  assert.equal(rt.routes.matrix.length, sw.stewards.length);
+  assert.ok(rt.routes.matrix[0].cells.length >= 19, "matrix covers every capability");
+  assert.ok(typeof rt.routes.matrix[0].cells[0].route === "string", "route verdict present");
+  assert.ok(typeof rt.routes.matrix[0].cells[0].grant === "string", "grant verdict present");
+
+  // 路由改配置：非法 route 400 且不落盘；合法规则生效后可读回，最后清空。
+  const badRoute = await call(steward, "POST", "/__polaris/steward/api/routes", { rules: [{ steward: "watch", cap: "*", route: "nope" }] });
+  assert.equal(badRoute.statusCode, 400);
+  const okRoute = await post("/api/routes", { rules: [{ steward: "watch", cap: "notify.*", target: "owner", route: "deny" }] });
+  assert.equal(okRoute.ok, true);
+  assert.equal(okRoute.routes.rules.length, 1);
+  assert.equal(okRoute.routes.errors.length, 0);
+  const cleared = await post("/api/routes", { default: "allow", rules: [] });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.routes.rules.length, 0);
+
+  // 编制增删改：非法树 400、缺 id 400、删不存在的 404、enable 生效、reset 回默认。
+  const badTree = await call(steward, "POST", "/__polaris/steward/api/stewards", { op: "save", id: "cbtest", steward: { id: "cbtest", tree: { foo: 1 } } });
+  assert.equal(badTree.statusCode, 400, "invalid tree refused");
+  assert.equal((await call(steward, "POST", "/__polaris/steward/api/stewards", { op: "save" })).statusCode, 400, "id required");
+  assert.equal((await call(steward, "POST", "/__polaris/steward/api/stewards", { op: "delete", id: "nope" })).statusCode, 404, "unknown steward is 404");
+  const off = await post("/api/stewards", { op: "enable", id: "watch", enabled: false });
+  assert.equal(off.ok, true);
+  assert.equal(off.stewards.filter((s) => s.id === "watch")[0].enabled, false, "enable toggle sticks");
+  const resetStewards = await post("/api/stewards", { op: "reset" });
+  assert.equal(resetStewards.ok, true);
+  assert.equal(resetStewards.stewards.filter((s) => s.id === "watch")[0].enabled, true, "reset restores the builtin");
+
+  // 体检：结论 + 修法入口，能力数来自能力仓。
+  const doc = await get("/api/doctor");
+  assert.equal(doc.ok, true);
+  assert.equal(typeof doc.healthy, "boolean");
+  assert.ok(doc.counts.capabilities >= 19, "doctor sees the catalog");
+  assert.ok(Array.isArray(doc.checks), "checks array");
+  for (const c of doc.checks) assert.ok(typeof c.fix.page === "string", "every check names a place to fix");
+
+  // 追查增强：导出 jsonl、重放（不执行能力）、对比。
+  const traces = await get("/api/trace?limit=5");
+  assert.ok(traces.traces.length >= 1, "a trace exists after mount");
+  const first = traces.traces[0].id;
+  const exp = await call(steward, "GET", "/__polaris/steward/api/trace/export?id=" + encodeURIComponent(first));
+  assert.equal(exp.statusCode, 200);
+  assert.ok(String(exp.headers["content-type"]).includes("ndjson"), "export is ndjson");
+  const lines = exp.body.trim().split("\n");
+  assert.ok(lines.length >= 2, "export has a header plus rows");
+  assert.equal(JSON.parse(lines[0]).kind, "trace");
+  assert.ok(lines.some((l) => JSON.parse(l).kind === "span"), "export carries spans");
+  const rep = await post("/api/trace/replay", { id: first });
+  assert.equal(rep.ok, true, "replay runs");
+  assert.ok(Array.isArray(rep.before) && Array.isArray(rep.after), "replay reports before/after");
+  assert.ok(typeof rep.changed === "boolean");
+  if (traces.traces.length >= 2) {
+    const diff = await get("/api/trace/diff?id=" + encodeURIComponent(first) + "&against=" + encodeURIComponent(traces.traces[1].id));
+    assert.equal(diff.ok, true);
+    assert.ok(Array.isArray(diff.added) && Array.isArray(diff.removed), "diff lists the delta");
+  }
+  assert.equal((await call(steward, "GET", "/__polaris/steward/api/trace/replay")).statusCode, 404, "replay is POST only");
+
+  for (const off2 of m.effects) { try { off2(); } catch { /* ignore */ } }
 });

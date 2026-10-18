@@ -257,6 +257,34 @@ const detail = await json(await call(steward, "GET", "/__polaris/steward/api/tra
 assert.equal(detail.ok, true);
 assert.ok(detail.trace && detail.waterfall && Array.isArray(detail.waterfall.spans), "trace waterfall detail");
 
+// 13d. control surface: stewards, routing matrix, doctor, trace replay and export
+const sw0 = await json(await call(steward, "GET", "/__polaris/steward/api/stewards"));
+assert.equal(sw0.ok, true, "stewards listed");
+assert.ok(sw0.stewards.some((s) => s.id === "watch" && s.tree !== undefined), "builtin steward carries its tree");
+const rt0 = await json(await call(steward, "GET", "/__polaris/steward/api/routes"));
+assert.equal(rt0.ok, true, "routes matrix");
+assert.equal(rt0.routes.matrix.length, sw0.stewards.length, "matrix covers every steward");
+assert.ok(rt0.routes.matrix[0].cells.length >= 19, "matrix covers every capability");
+const rtBad = await call(steward, "POST", "/__polaris/steward/api/routes", { rules: [{ steward: "*", cap: "*", route: "nope" }] });
+assert.equal(rtBad.statusCode, 400, "illegal route refused");
+const rtOk = await json(await call(steward, "POST", "/__polaris/steward/api/routes", { default: "allow", rules: [] }));
+assert.equal(rtOk.ok, true, "routes saved");
+const doc = await json(await call(steward, "GET", "/__polaris/steward/api/doctor"));
+assert.equal(doc.ok, true, "doctor answers");
+assert.ok(doc.counts.capabilities >= 19, "doctor sees the catalog");
+assert.ok(Array.isArray(doc.checks), "doctor checks array");
+const exp = await call(steward, "GET", "/__polaris/steward/api/trace/export?id=" + encodeURIComponent(one.id));
+assert.equal(exp.statusCode, 200, "trace export 200");
+assert.ok(JSON.parse(exp.body.trim().split("\n")[0]).kind === "trace", "export header line");
+const rep = await json(await call(steward, "POST", "/__polaris/steward/api/trace/replay", { id: one.id }));
+assert.equal(rep.ok, true, "replay runs");
+assert.ok(Array.isArray(rep.after), "replay reports what the tree would do");
+const swOff = await json(await call(steward, "POST", "/__polaris/steward/api/stewards", { op: "enable", id: "watch", enabled: false }));
+assert.equal(swOff.ok, true, "steward enable op");
+assert.equal(swOff.stewards.filter((s) => s.id === "watch")[0].enabled, false, "toggle sticks");
+const swReset = await json(await call(steward, "POST", "/__polaris/steward/api/stewards", { op: "reset" }));
+assert.equal(swReset.ok, true, "steward reset op");
+
 const runs0 = await json(await call(steward, "GET", "/__polaris/steward/api/runs?limit=5"));
 assert.equal(runs0.ok, true);
 assert.ok(Array.isArray(runs0.runs), "runs array");
