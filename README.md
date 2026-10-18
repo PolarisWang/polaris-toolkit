@@ -185,7 +185,7 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 - 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面，5 秒自刷新。自上而下：
   结论行（堆 / P99 / agent 数 / 待决信号 / 运行流程与待批 / 动作预算 / 状态）→ 控制条
   （自动动作、飞书通知、立即汇报、强制采样、重载规则）→ 模块卡片 → 待批 → 工作流表 →
-  agent 明细（会话名 / 模块 / 状态 / 静默 / 轮次 / 归属依据）→ 信号流 → 页脚（journal / 规则 hash / 降级）。
+  agent 明细（会话名 / 模块 / 状态 / 静默 / 轮次 / 工作目录 / 归属依据）→ 信号流 → 页脚（journal / 规则 hash / 降级）。
 - 观察：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、
   `session/created|disposed|event|title` 共 13 类事件，外加每 5 秒 `ctx.agents.list()` 对账
   （宿主只在状态变化时发事件，卡死的 running 不会自己发）；running 且 8 分钟无事件 → `stalled`。
@@ -196,8 +196,12 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
   不带工作目录），所以"这个会话在哪个仓库干活"就是最硬的证据。确定性路由落空的会交给宿主 llm
   （`agentDefaultModel` 路由，可用 `classifier.provider/model` 覆盖）判断一次，答案按
   `sha1(cwd|title|模块集)` 缓存在 `module-cache.json`（TTL 7 天）；低于 `minConfidence` 的也缓存成
-  unassigned，避免每个 tick 反复问模型。面板可以手改：模块规则卡片（JSON，含 workspaces/titles）
-  和 agent 表里的下拉框（固定到某模块 = 写 pin，永久生效），"重判"按钮强制重问一次。
+  unassigned，避免每个 tick 反复问模型。
+- 模块增删改：面板模块区直接操作（`POST api/modules`，写入 settings.json 的 `modules`）。
+  「新增模块」「编辑」「删除」「恢复默认」，字段是 id / 名称 / 工作目录（每行或逗号分隔）/ 标题关键词 /
+  host / 启用；id 必须匹配 `^[a-zA-Z0-9_-]{1,32}$`，`unassigned` 保留不可删。保存后立刻 `routeAll()` 重算归属，
+  指向被删模块的 pin 自动清掉（响应里的 `droppedPins`）。agent 表里的下拉框仍是 pin（固定到某模块，永久生效），
+  「重判」按钮强制重问一次；`GET api/modules` 返回 `modules`（计数）+ `defs`（编辑用定义）+ `pins`。
 - 规则：13 条内置规则（`lib/features/steward/rules/builtin/{agents,system,social}.json`），
   字段 `id/version/when/if/actions/cooldownSec/severity/enabledByDefault/params`；表达式是自研的
   确定性求值器（不 eval、不 Function）。用户覆盖放 `~/.dsh/polaris-toolkit/rules/overrides/*.json`

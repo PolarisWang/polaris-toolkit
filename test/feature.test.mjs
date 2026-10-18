@@ -244,3 +244,46 @@ test("journal supports incremental pull with since", async () => {
   assert.ok(second.entries.every((e) => e.seq > first.latest), "only entries past the cursor");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
+
+test("modules can be created, edited, deleted and reset from the panel", async () => {
+  const m = mount();
+  const h = m.handler("steward");
+  const save = async (module) => json(await call(h, "POST", "/__polaris/steward/api/modules", { op: "save", module }));
+  const defs = async () => (await json(await call(h, "GET", "/__polaris/steward/api/modules"))).defs;
+  const created = await save({ id: "cbtest", name: "CB 测试", workspaces: "D:/agent/cb2, D:/agent/cb3", titles: "cb2, cb3", enabled: true });
+  assert.equal(created.ok, true);
+  let list = await defs();
+  const found = list.filter((x) => x.id === "cbtest")[0];
+  assert.ok(found !== undefined, "module saved");
+  assert.deepEqual(found.workspaces, ["D:/agent/cb2", "D:/agent/cb3"], "workspaces split on commas");
+  assert.deepEqual(found.titles, ["cb2", "cb3"], "titles split on commas");
+
+  const edited = await save({ id: "cbtest", name: "CB 改名", workspaces: ["D:/agent/cb2"], titles: [], enabled: false });
+  assert.equal(edited.ok, true);
+  list = await defs();
+  const again = list.filter((x) => x.id === "cbtest")[0];
+  assert.equal(again.name, "CB 改名", "save overwrites in place");
+  assert.equal(again.enabled, false);
+  assert.equal(again.workspaces.length, 1);
+
+  const badId = await call(h, "POST", "/__polaris/steward/api/modules", { op: "save", module: { id: "bad id!", name: "x" } });
+  assert.equal(badId.statusCode, 400, "illegal id refused");
+  const reserved = await call(h, "POST", "/__polaris/steward/api/modules", { op: "delete", id: "unassigned" });
+  assert.equal(reserved.statusCode, 400, "unassigned is reserved");
+
+  await json(await call(h, "POST", "/__polaris/steward/api/pin", { agentId: "agent-cb", module: "cbtest" }));
+  const del = await json(await call(h, "POST", "/__polaris/steward/api/modules", { op: "delete", id: "cbtest" }));
+  assert.equal(del.ok, true);
+  assert.equal(del.droppedPins, 1, "pins pointing at a deleted module are dropped");
+  assert.equal(del.pins["agent-cb"], undefined, "the stale pin is gone");
+  list = await defs();
+  assert.equal(list.filter((x) => x.id === "cbtest").length, 0, "module removed");
+  const missing = await call(h, "POST", "/__polaris/steward/api/modules", { op: "delete", id: "cbtest" });
+  assert.equal(missing.statusCode, 404, "deleting a missing module is 404");
+
+  const reset = await json(await call(h, "POST", "/__polaris/steward/api/modules", { op: "reset" }));
+  assert.equal(reset.ok, true);
+  list = await defs();
+  assert.ok(list.length >= 5, "builtin modules restored");
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});

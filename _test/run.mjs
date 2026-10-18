@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { FEATURES } from "../lib/features/index.js";
@@ -84,6 +85,11 @@ async function call(handler, method, url, body) {
 async function json(res) {
   try { return JSON.parse(res.body); } catch { throw new Error("not json: " + res.body.slice(0, 200)); }
 }
+
+// 自检绝不能碰真实的 ~/.dsh：整份状态（settings/journal/*.db）都落在临时目录里，
+// 否则跑一次冒烟就会把用户的设置和账本冲掉。
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "polaris-smoke-"));
+process.env.DSH_HOME = HOME;
 
 // start from a clean settings file so the assertions are about behaviour, not leftovers
 const settingsFile = path.join(stateDir(), "settings.json");
