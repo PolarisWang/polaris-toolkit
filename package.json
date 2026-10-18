@@ -34,10 +34,7 @@
     "test": "node --test \"test/*.test.mjs\" && node _test/run.mjs",
     "slim": "node bin/slim.mjs",
     "doctor": "node bin/polaris.mjs doctor",
-    "install": "node bin/polaris.mjs install"
+    "polaris:install": "node bin/polaris.mjs install"
   },
-  "license": "MIT",
-  "bin": {
-    "polaris": "./bin/polaris.mjs"
-  }
+  "license": "MIT"
 }

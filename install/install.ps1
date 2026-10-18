@@ -99,7 +99,9 @@ try {
   # quotes through `node -e` from Windows PowerShell mangles the script.
   $probeNode = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
   if (Test-Path -LiteralPath $probeNode) {
-    $probeJs = Join-Path $env:TEMP ('polaris-manifest-probe-' + $stamp + '.cjs')
+    $tmpDir = $env:TEMP
+  if ([string]::IsNullOrEmpty($tmpDir)) { $tmpDir = [System.IO.Path]::GetTempPath() }
+  $probeJs = Join-Path $tmpDir ('polaris-manifest-probe-' + $stamp + '.cjs')
     $probeSrc = @'
 const fs = require("node:fs");
 try { JSON.parse(fs.readFileSync(process.argv[2], "utf8")); console.log("parse-ok"); }
@@ -149,7 +151,9 @@ if ($pnpmCmd) {
     if ($hit.Success) { $storeArgs = @('--store-dir', $hit.Groups[1].Value.Replace('\\', '\')) }
   }
   if ($pnpmCmd -like '*.cjs' -or $pnpmCmd -like '*.mjs' -or $pnpmCmd -like '*.js') { $exe = $nodeExe; $argv = @($pnpmCmd) } else { $exe = $pnpmCmd; $argv = @() }
-  $argv = $argv + @('install') + $storeArgs
+  # pnpm 10+ 默认 strictDepBuilds=true：它对 file: 依赖也要走一遍 build 审批，
+  # 会以 ERR_PNPM_IGNORED_BUILDS 直接失败。本插件没有任何 lifecycle 脚本，关掉这条即可。
+  $argv = $argv + @('install', '--config.strictDepBuilds=false') + $storeArgs
   Write-Host ('running: ' + $exe + ' ' + ($argv -join ' '))
   Push-Location $profileDir
   try { & $exe @argv | Out-Host } finally { Pop-Location }
@@ -213,7 +217,8 @@ Write-Host ('State: ' + (Join-Path $userHome '.dsh\polaris-toolkit'))
 # 4) 用同一套断言复核一次（doctor 只读；失败只提醒，不推翻已经装好的东西）
 $doctorNode = $nodeExe
 if (-not $doctorNode) {
-  $cand = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
+  $cand = ''
+  if (-not [string]::IsNullOrEmpty($env:LOCALAPPDATA)) { $cand = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe' }
   if (Test-Path -LiteralPath $cand) { $doctorNode = $cand }
 }
 $polarisCli = Join-Path $pkgRoot 'bin\polaris.mjs'

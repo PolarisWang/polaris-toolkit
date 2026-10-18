@@ -255,7 +255,12 @@ function install(opts) {
   if (opts.keepOld === true) args.push("-KeepOld");
   const shell = process.env.ComSpec !== undefined ? "powershell.exe" : "powershell";
   process.stdout.write("running: " + shell + " " + args.join(" ") + "\n\n");
-  const res = spawnSync(shell, args, { stdio: "inherit" });
+  const childEnv = Object.assign({}, process.env, {
+    USERPROFILE: process.env.USERPROFILE === undefined || process.env.USERPROFILE.length === 0 ? home() : process.env.USERPROFILE,
+    TEMP: process.env.TEMP === undefined || process.env.TEMP.length === 0 ? os.tmpdir() : process.env.TEMP,
+    TMP: process.env.TMP === undefined || process.env.TMP.length === 0 ? os.tmpdir() : process.env.TMP
+  });
+  const res = spawnSync(shell, args, { stdio: "inherit", env: childEnv });
   if (res.error !== undefined) {
     process.stderr.write("启动 PowerShell 失败: " + String(res.error.message) + "\n");
     return 2;
