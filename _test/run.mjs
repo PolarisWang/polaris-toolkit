@@ -192,6 +192,7 @@ assert.ok(typeof status.text === "string" && status.text.includes("heap-guard"),
 
 const stStatus = await tools.filter((t) => t.name === "steward_status")[0].execute({}, { signal: { throwIfAborted() {} } });
 assert.ok(typeof stStatus.text === "string" && stStatus.text.length > 0, "steward_status text");
+assert.ok(stStatus.text.includes("actMode"), "status reports actMode");
 const observed = await tools.filter((t) => t.name === "steward_observe")[0].execute({}, { signal: { throwIfAborted() {} } });
 assert.ok(typeof observed.text === "string" && observed.text.length > 0, "steward_observe text");
 
@@ -261,6 +262,27 @@ const collected = await json(await call(steward, "POST", "/__polaris/steward/api
 assert.equal(collected.ok, true, "collect action works");
 const st = await json(await call(steward, "GET", "/__polaris/steward/api/tick"));
 assert.ok(Array.isArray(st.rev), "steward heartbeat rev");
+
+// 13c. P7 出口 + agent 判断 + echo 闸门
+assert.equal(sstate.control.actMode, "echo", "default actMode is echo (print only)");
+assert.ok(Array.isArray(sstate.echoes), "echo list present");
+assert.ok(Array.isArray(sstate.moduleDefs) && sstate.moduleDefs.length >= 5, "module definitions for the editor");
+assert.ok(sstate.control.classifier === null || typeof sstate.control.classifier === "object", "classifier stats slot");
+
+const metrics = await call(steward, "GET", "/__polaris/steward/metrics");
+assert.equal(metrics.statusCode, 200);
+assert.ok(String(metrics.headers["content-type"]).includes("text/plain"), "prometheus text content type");
+assert.ok(metrics.body.includes("polaris_heap_used_mb"), "heap metric exported");
+assert.ok(metrics.body.includes('polaris_module_agents{module="dsh"}'), "per-module metric with label");
+
+const modeLive = await json(await call(steward, "POST", "/__polaris/steward/api/settings", { patch: { actMode: "live" } }));
+assert.equal(modeLive.ok, true);
+assert.equal(modeLive.settings.actMode, "live", "actMode patched");
+const modeEcho = await json(await call(steward, "POST", "/__polaris/steward/api/settings", { patch: { actMode: "echo" } }));
+assert.equal(modeEcho.settings.actMode, "echo", "actMode restored to echo");
+
+const badCls = await json(await call(steward, "POST", "/__polaris/steward/api/classify", { agentId: "nope" }));
+assert.equal(badCls.ok, false, "unknown agent refused");
 
 const routeCount = routes.length;
 
