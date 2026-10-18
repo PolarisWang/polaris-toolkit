@@ -715,3 +715,48 @@ LLM 结果 <0.6 → 仍归 unassigned，但记 candidate 供你一键确认。
 3. **没有动作**：动作需要 6 章的幂等键与租约，P0 一律只读；面板里的按钮只有「强制采样 / 落盘 journal」。
 
 P1 入口条件：P0 在真实宿主上跑满 24h，确认 journal 可重放、`stalled` 无假阳性、面板不拖慢 GUI（面板轮询是 5s 一次 `api/state`，只读内存）。
+
+> 本节的三条偏差已被第 18 节取代：P1 起 SQLite 已建齐 12 张表、LLM 兜底随总管会话接入、动作按 L1/L2 分档落地。
+
+---
+
+## 18. P1–P7 实现状态（2026-10-18）
+
+代码层面 P1–P7 已全部落地（单机），联邦默认关闭。真机 24h 验收还没做——那需要你先重启让宿主加载新代码。
+
+| 期 | 落地位置 | 说明 |
+| --- | --- | --- |
+| P1 | `core/{db,schema,approvals}.js`、`wf/engine.js` | 12 张表；`node:sqlite` 优先，探测失败降级 JSON 快照 + ops 重放；三段式副作用 + `idem_key`；wait/retry 定时器落库；subject 租约；DLQ；`recoverAmbiguous()` 钩子；shadow run；deadline；cancel |
+| P2 | `rules/{expr,loader,evaluator}.js`、`rules/builtin/*.json` | 13 条内置规则；确定性表达式（不 eval）；冷却按 `ruleId|subject`；同 subject 同 workflow 冲突取 severity 高者，败者记 suppressed；overrides 可禁用/调参/新增；`rulesHash` 漂移 |
+| P3 | `session/{rollup,pressure,handoff,bootstrap}.js` | rollup 聚合与渲染；`pressure = 0.5*fill + 0.3*compactRecency + 0.2*rollupRatio`；自适应轮换 `shouldRotate`（floor / hard-fill / debounce / warn）；交接摘要；`agents.create({preset})` 绑定与失败降级 |
+| P4 | `federation/{envelope,peer}.js`、`core/approvals.js` | HMAC-SHA256 信封（键排序 canonical）、5 分钟 skew、nonce 去重（4096）、心跳 epoch 单调、审批版本 CAS、活跃端答复 |
+| P5 | `peer.commands()` + `/api/federation/receive` | 下行命令白名单硬编码 `ask/approve/collect/set-policy/pause/resume`，配置改不了；`cancel/exec/spawn/eval` 一律拒 |
+| P6 | `/api/replay`、`/api/answer`、`channels/feishu.js` | 任一历史 run 可重放（新 traceId）；DLQ 行保留；面板审批按钮；飞书走本机 `lark-cli im +send --to me --text` |
+| P7 | 未做 | OTLP / MQTT 出口仍按「可选」处理，当前用 `/api/state` + journal 就能外接 |
+
+新增文件（相对 P0）：
+
+    core/schema.js        12 张表定义（列/主键/自增/整数列）
+    core/db.js            sqlite 与 JSON 双后端，表级 API
+    core/approvals.js     审批台账（create/answer CAS/sweep）
+    wf/engine.js          持久工作流引擎
+    wf/defs.js            5 个内置流程（notify/ask/agent.stall/host.protect/digest）
+    rules/expr.js         表达式求值 + severity + 事件匹配
+    rules/loader.js       normalize/canonical/hash/内置与 overrides 合并
+    rules/evaluator.js    求值 + 冷却 + 冲突消解 + shadow
+    rules/builtin/*.json  13 条规则
+    actuators/{notify,prompt,answer}.js
+    channels/{desktop,feishu}.js
+    session/{rollup,pressure,handoff,bootstrap}.js
+    federation/{envelope,peer}.js
+
+与设计的四处有意偏差：
+
+1. **规则用 JSON 不用 YAML**：不为一个规则格式引解析器，`builtin/*.json` + `overrides/*.json` 足够表达 when/if/actions/params。
+2. **没有独立 kernel 进程**：所有东西都在插件进程内，靠租约 + 幂等键保证串行，而不是靠一个中心调度器。
+3. **跨机不做选主**：agent 只存在于一台机的 V8，谁是 owner 是物理事实；冲突面只剩审批双答（CAS）与动作重复（idemKey）。
+4. **`steward_ask` 复用 `wf.ask`**：请示不是一条特殊路径，而是一个会等待审批的工作流，重放/超时/取消都自动继承。
+
+测试：`npm test` = `node --test "test/*.test.mjs"`（86 条）+ `node _test/run.mjs`（整包挂载 smoke）。
+单测覆盖 db 双后端、引擎恢复/重试/幂等/shadow/租约、规则全部操作符与冲突、审批 CAS、联邦篡改与重放、
+5 个内置流程、rollup/pressure/handoff/binder，以及集成层「挂载不崩 / 服务全炸也能降级」。

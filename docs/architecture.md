@@ -44,13 +44,22 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
     lib/core/zstd.js             拼接式 zstd 容器按帧读取（解析帧头/解压）
     lib/features/index.js        FEATURES 登记表（新增功能只改这里 + 新目录）
     lib/features/heap-guard/     首个功能（宿主逻辑、面板 HTML、采样器、瘦身、快照、bili、会话名）
-lib/features/steward/        大内总管 P0：事件总线 / 账本 / 模块路由 / 健康采样 / 只读面板（详见 steward-design.md）
+    lib/features/steward/        大内总管（详见 steward-design.md）
+      index.js                   feature 入口：全部构造都包 attempt，失败只降级、不抛
+      panel.js                   金字塔面板：结论 / 控制条 / 模块 / 待批 / 工作流 / agent / 信号
+      core/{store,db,schema,approvals,bus,health}.js  账本 + 12 表（sqlite 或 JSON 降级）+ 审批
+      wf/{engine,defs}.js        持久工作流引擎与 5 个内置流程
+      rules/{expr,loader,evaluator}.js + builtin/*.json  确定性规则与 13 条内置规则
+      session/{rollup,pressure,handoff,bootstrap}.js    汇总 / 轮换 / 交接 / 会话绑定
+      actuators/{notify,prompt,answer}.js + channels/*  动作出口与通知通道
+      federation/{envelope,peer}.js                     HMAC 信封与白名单命令
     lib/panel.js                 工具包外壳页（左功能卡片 + 右 iframe）
     lib/client.js                客户端入口：注册左侧栏面板、右侧 tab、会话头 chip、设置页
     bin/slim.mjs                 会话瘦身子进程（L1/L2/L3）
     bin/titles.mjs               会话名扫描子进程（有界读帧）
     install/install.ps1          安装到 %USERPROFILE%\.dsh\profiles\<profile>（注入式 file: 依赖 + pnpm install + 写 bundles）
-    _test/run.mjs                离线自测（假 ctx，跑通路由/工具/设置/面板）
+    _test/run.mjs                离线自测（假 ctx，把整包挂一遍：路由/工具/设置/面板）
+    test/*.test.mjs              node:test 单测与集成测试（npm test 先跑这一层）
 
 ## 3. feature 契约
 
@@ -67,13 +76,19 @@ lib/features/steward/        大内总管 P0：事件总线 / 账本 / 模块路
       async status(scope) {}                // 可选：外壳卡片上的状态与等级
     }
 
-`scope` = `{ id, ctx, config, dir, settings, core, log, route, tool, onDispose, runtime }`：
+`scope` = `{ id, ctx, config, dir, settings, core, log, route, tool, onDispose, runtime, shared }`：
 
 - `route(method, path, handler)` 注册到 `<prefix>/<id>` 下；面板必须用相对 URL 访问。
 - `tool(spec)` 走 `defineTool` 注册到 DSH 工具表。
 - `settings.all()/get(k)/set(patch)` 读写 `settings.json` 的该 feature 分节。
 - `onDispose(fn)` 在插件卸载时执行（每个 feature 一个 `ctx.effect`）。
 - `runtime` 放面板/工具都要用的实例（采样器、瘦身器、会话名缓存…）。
+- `shared.runtimes` 是**跨 feature 的只读句柄表**（`Map<featureId, record>`），只暴露 record 的
+  `action(actionId, body)` 与 `status()`；steward 通过它触发 heap-guard 的瘦身，不共享任何内部状态。
+
+加载隔离是硬要求：feature 的 `setup` 外层必须 try/catch，内部每一步构造也要单独兜底，
+任何服务缺失/异常只能降级（面板与 `api/state` 里能看到 degraded），绝不能让插件加载失败——
+一个 feature 抛异常会连累整行 bundle 的挂载。
 
 工具包级路由（lib/core/host.js）：
 

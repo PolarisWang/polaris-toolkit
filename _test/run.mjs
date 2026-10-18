@@ -96,7 +96,7 @@ const result = mountToolkit(ctx, { features: { "heap-guard": { intervalSec: 30 }
 
 assert.deepEqual(result.features, ["heap-guard", "steward"], "both features mounted in order");
 assert.equal(routes.length, 3, "toolkit + two feature routes");
-assert.equal(tools.length, 5, "five agent tools");
+assert.equal(tools.length, 9, "nine agent tools");
 
 const toolkit = routes.filter((r) => r.path === "/__polaris")[0].handler;
 const feature = routes.filter((r) => r.path === "/__polaris/heap-guard")[0].handler;
@@ -183,9 +183,17 @@ assert.equal((await call(toolkit, "GET", "/__polaris/nope")).statusCode, 404, "t
 
 // 10. tools are real specs
 const names = tools.map((t) => t.name).sort();
-assert.deepEqual(names, ["heap_bili", "heap_slim", "heap_snapshot", "heap_status", "steward_observe"]);
+assert.deepEqual(names, [
+  "heap_bili", "heap_slim", "heap_snapshot", "heap_status",
+  "steward_ask", "steward_begin", "steward_observe", "steward_report", "steward_status"
+]);
 const status = await tools.filter((t) => t.name === "heap_status")[0].execute({}, { signal: { throwIfAborted() {} } });
 assert.ok(typeof status.text === "string" && status.text.includes("heap-guard"), "heap_status text");
+
+const stStatus = await tools.filter((t) => t.name === "steward_status")[0].execute({}, { signal: { throwIfAborted() {} } });
+assert.ok(typeof stStatus.text === "string" && stStatus.text.length > 0, "steward_status text");
+const observed = await tools.filter((t) => t.name === "steward_observe")[0].execute({}, { signal: { throwIfAborted() {} } });
+assert.ok(typeof observed.text === "string" && observed.text.length > 0, "steward_observe text");
 
 // 11. settings file on disk
 const file = path.join(stateDir(), "settings.json");
@@ -208,6 +216,34 @@ assert.equal(sstate.agents.length, 1, "agent observed through the bus");
 assert.equal(sstate.agents[0].status, "running");
 assert.equal(sstate.agents[0].moduleId, "unassigned", "no module match yet");
 assert.ok(Array.isArray(sstate.modules) && sstate.modules.length >= 5, "module buckets present");
+
+// 13b. steward feature surface (P1-P7 wiring)
+const sfeat = features.features[1];
+assert.equal(sfeat.id, "steward");
+assert.equal(sfeat.actions.length, 4, "four steward actions");
+
+const rules = await json(await call(steward, "GET", "/__polaris/steward/api/rules"));
+assert.equal(rules.ok, true);
+assert.ok(rules.count >= 13, "builtin rules loaded");
+assert.match(rules.hash, /^[0-9a-f]{16}$/, "rules hash");
+
+const runs0 = await json(await call(steward, "GET", "/__polaris/steward/api/runs?limit=5"));
+assert.equal(runs0.ok, true);
+assert.ok(Array.isArray(runs0.runs), "runs array");
+
+const apprs0 = await json(await call(steward, "GET", "/__polaris/steward/api/approvals"));
+assert.equal(apprs0.ok, true);
+assert.ok(Array.isArray(apprs0.approvals), "approvals array");
+
+const begin = await json(await call(steward, "POST", "/__polaris/steward/api/action", { id: "digest" }));
+assert.equal(begin.ok, true, "digest action runs");
+
+const sset = await json(await call(steward, "POST", "/__polaris/steward/api/settings", { patch: { budgetPerHour: 42 } }));
+assert.equal(sset.ok, true);
+assert.equal(sset.settings.budgetPerHour, 42, "steward settings patched");
+
+const reset0 = await json(await call(steward, "POST", "/__polaris/steward/api/settings", { patch: { budgetPerHour: 60 } }));
+assert.equal(reset0.ok, true);
 
 const pinned = await json(await call(steward, "POST", "/__polaris/steward/api/pin", { agentId: "agent-1", module: "dsh" }));
 assert.equal(pinned.ok, true);

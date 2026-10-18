@@ -1,7 +1,7 @@
 # Polaris Toolkit
 
 一个 DSH（DeepSeek Harness）**多功能工具包**插件。Polaris Toolkit 是入口包，
-下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制）与 **Steward**（大内总管：观察全部 agent、归类到模块、形成待决信号；P0 只读，设计见 [docs/steward-design.md](docs/steward-design.md)），
+下面的每个能力都是一个 feature；当前内置 **Heap Guard**（宿主 V8 堆监控 / 会话安全瘦身 / bili 预算控制）与 **Steward**（大内总管：观察全部 agent、归类到模块、规则命中后走持久工作流，动作/审批/上报全链路；设计见 [docs/steward-design.md](docs/steward-design.md)），
 后续新增功能只加 feature，不动入口。
 
 - 入口：左侧栏 **Polaris Toolkit**（右侧栏 tab 暂未使用，见"设计取舍"）
@@ -58,6 +58,16 @@ Heap Guard 做三件事：
             snapshot.js     写 V8 堆快照与轮转
             bili.js         bili 配置读写与预算调整
             titles.js       会话名缓存（子进程扫描 + mtime/size 校验 + 内存标题）
+          steward/          大内总管：观察 / 规则 / 持久工作流 / 审批 / 联邦
+            index.js        该 feature 的接线（全部构造都包在 attempt 里，失败只降级）
+            panel.js        金字塔面板（结论 / 控制条 / 模块 / 待批 / 工作流 / agent / 信号）
+            core/           账本 store、db（sqlite 或 JSON 降级）、schema、approvals、健康采样
+            wf/             引擎 engine.js（三段式 / 定时器 / 租约 / 重试 / DLQ）与内置流程 defs.js
+            rules/          表达式求值 expr.js、加载 loader.js、求值 evaluator.js、builtin/*.json
+            session/        rollup、pressure（自适应轮换）、handoff、bootstrap（会话绑定）
+            actuators/      notify / prompt / answer 三个动作出口
+            channels/       desktop（内存环形）、feishu（lark-cli 子进程）
+            federation/     信封 envelope.js（HMAC）与 peer.js（白名单 / 去重 / 心跳）
       bin/slim.mjs          独立瘦身脚本（子进程运行，可脱离插件单用）
       bin/titles.mjs        会话名扫描子进程（按帧有界读 session/title，输出 JSON）
       docs/architecture.md  架构说明（装载链 / feature 契约 / 客户端表面 / 硬约束）
@@ -65,7 +75,8 @@ Heap Guard 做三件事：
       install/
         install.ps1         安装到 profile（注入式 file: 依赖 + pnpm install + 写 bundles + 清退旧包）
         uninstall.ps1       卸载（JSON 手术移除依赖/bundles，或 -Restore 还原备份）
-      _test/run.mjs         离线自测（假 ctx，不连 DSH；node _test/run.mjs）
+      _test/run.mjs         离线自测（假 ctx，把整个包挂一遍，不连 DSH；node _test/run.mjs）
+      test/*.test.mjs       node:test 单元 / 集成测试（npm test 先跑这一层再跑 _test）
 
 ---
 
@@ -136,18 +147,47 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 
 ---
 
-## 4.5 Steward（大内总管，P0）
+## 4.5 Steward（大内总管）
 
-当前是**只读观察层**：把宿主里所有 agent 的状态、会话名、静默时长、待答提问收进账本，按模块（ev / cb2 / il2cpp / dsh / unassigned）归类，产生 signal。它**不做**任何动作——不代答、不 steer、不发消息。
+一条链：**观察 → 归类 → 规则 → 持久工作流 → 动作 / 审批 / 上报**。默认是"只通知"（L1），
+任何真正的副作用都要显式打开。设计依据见 [docs/steward-design.md](docs/steward-design.md)。
 
-- 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面；数据 5 秒自刷新。
-- 事件来源：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、`session/created|disposed|event|title`。
-- 对账：每 5 秒 `ctx.agents.list()` 同步一次，补偿宿主「只在状态变化时才发事件」的盲区；running 但 8 分钟无事件 → `stalled` 信号。
-- 待答提问：`userQuestions.continued(agent)`（宿主硬约束：只能查 root agent）。
-- 路由：pin（面板 / `POST api/pin` 手工钉）→ 工作区前缀 → 标题正则 → unassigned；LLM 兜底留到 P1。
-- journal：`features/steward/journal-YYYYMMDD.jsonl`，攒批落盘（2 秒 / 256 KB）。
+- 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面，5 秒自刷新。自上而下：
+  结论行（堆 / P99 / agent 数 / 待决信号 / 运行流程与待批 / 动作预算 / 状态）→ 控制条
+  （自动动作、飞书通知、立即汇报、强制采样、重载规则）→ 模块卡片 → 待批 → 工作流表 →
+  agent 明细（会话名 / 模块 / 状态 / 静默 / 轮次 / 归属依据）→ 信号流 → 页脚（journal / 规则 hash / 降级）。
+- 观察：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、
+  `session/created|disposed|event|title` 共 13 类事件，外加每 5 秒 `ctx.agents.list()` 对账
+  （宿主只在状态变化时发事件，卡死的 running 不会自己发）；running 且 8 分钟无事件 → `stalled`。
+- 待答提问：`userQuestions.continued(agent)`；宿主硬约束是只能查 root agent，所以子 agent 的问题
+  只能通过它的父会话 `steer`。
+- 路由：pin（面板或 `POST api/pin`）→ 工作区路径前缀 → 标题正则 → `unassigned`；命中理由写进账本，
+  面板"归属依据"列可见。
+- 规则：13 条内置规则（`lib/features/steward/rules/builtin/{agents,system,social}.json`），
+  字段 `id/version/when/if/actions/cooldownSec/severity/enabledByDefault/params`；表达式是自研的
+  确定性求值器（不 eval、不 Function）。用户覆盖放 `~/.dsh/polaris-toolkit/rules/overrides/*.json`
+  （可禁用、调参、新增），`POST api/rules/reload` 热重载；`rulesHash`（sha256 前 16 位）用于联邦漂移检测。
+- 工作流引擎：`node:sqlite`（宿主裁剪了 sqlite 时自动降级成 JSON 快照 + ops 重放），12 张表；
+  副作用走 intent → effect → result 三段式，幂等键落在 `actions.idem_key`，崩在中间的行由恢复钩子结算；
+  step 支持 wait/branch/parallel/judge/remote/compensate；单最小堆定时器 + 1 秒 tick，`wake_at` 落库；
+  同一 subject 用租约串行；失败指数退避，超限进 DLQ；`shadow` run 只记账不执行；面板可重放。
+- 内置流程：`wf.notify`（发通知）、`wf.ask`（开审批 + 等答复 / 到期作废）、`wf.agent.stall`、
+  `wf.host.protect`、`wf.digest`（汇总近期态势）。
+- 动作分档：默认 L1 只通知。`autoAct` 打开后，`actions.stallSteer` / `actions.heapSlim` 还要各自打开
+  才会真的 steer 会话或瘦身（瘦身走 heap-guard 的同一个动作，失败只记降级）。
+- 审批：`POST api/answer {id, answer, version}` 带版本 CAS，两个端同时点只有一个生效；到期自动作废。
+- 上报：desktop 通道（内存环形 200 条）永远可用；飞书走本机 `lark-cli`
+  （`notify.larkEnabled=true` 才启用，`notify.minSeverity` 默认 warning）。
+- 会话：`session.mode=manual`（默认）不自动开会话；打开后用
+  `agents.create({preset:"steward", title:"大内总管"})` 绑定并按 `rotateTurns/rotateTokens`
+  （默认 200 轮 / 300k token）自适应轮换，压力公式见设计文档 8.5。
+- 联邦：只有 `federation.secret` 长度 >= 16 才启用。HMAC-SHA256 信封、nonce 去重、
+  5 分钟时钟偏差、命令白名单（ask/approve/collect/set-policy/pause/resume），默认关。
+- 加载安全：`setup` 外层 try/catch，内部每步都包一层 attempt；任何服务缺失只降级
+  （`api/state` 的 `degraded` 会列出来），绝不让插件加载失败。
 
-为什么先只读：总管一旦能动手，就必须先有工作流引擎的幂等键与租约，否则「重试一次」可能给同一个 agent 发两遍消息。顺序不能倒（见 docs/steward-design.md 第 6 章）。
+为什么动作必须晚于引擎：总管一旦能动手，就必须先有幂等键与租约，否则"重试一次"可能给同一个 agent
+发两遍消息。顺序不能倒（见 docs/steward-design.md 第 6 章）。
 
 ---
 
@@ -161,7 +201,11 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 | heap_slim | 瘦身会话；scope="all" 时批量（受 maxPerClick 限制）；也可传 sessionId |
 | heap_snapshot | 写一份 V8 堆快照并返回路径 |
 | heap_bili | 读/写 bili 预算（max、residentMaxMB、warmMax、warmMaxBytes、gc.enabled） |
-| steward_observe | 只读快照：每个 agent 的模块归属 / 状态 / 静默时长 / 待答提问 / 最新信号 |
+| steward_observe | 只读快照：每个 agent 的模块归属 / 状态 / 静默时长 / 待答提问 / 最新信号 / 运行流程 / 待批 |
+| steward_status | 总管自身的运行状态：规则数 + hash、求值次数、工作流统计、待批、预算、通知通道、联邦、降级项 |
+| steward_begin | 手工拉起一个工作流（workflow / subject / text / vars），返回 run id 与状态 |
+| steward_report | 向主人上报一段文本（title / level），走 notify 通道并记账 |
+| steward_ask | 发起一次请示（title / detail / subject / ttlMs），返回审批 id；等主人在面板或飞书答复 |
 
 ---
 
@@ -201,6 +245,17 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
                   minFreeGB: 5
                   keep: 2
 
+steward 的运行期设置（settings.json 的 `steward` 节，面板控制条可直接改）：
+
+    autoAct: false                     # 总闸：关 = 所有工作流只通知
+    actions: { stallSteer: false, heapSlim: false }   # 两类真副作用，仍需各自打开
+    notify: { minSeverity: "warning", larkEnabled: false, larkCommand: "lark-cli" }
+    session: { mode: "manual", preset: "steward", title: "大内总管",
+               model: "auto", rotateTurns: 200, rotateTokens: 300000 }
+    federation: { hostId: "win-main", secret: "", peerUrl: "" }
+    budgetPerHour: 60                  # 动作预算，超了只保留 critical
+    modules: [...] / pins: {...}
+
 面板上可改的运行期设置（settings.json，改完立即生效）：
 autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、maxPerClick（每轮上限）。
 
@@ -216,6 +271,9 @@ autoSlim（自动清理开关，默认关）、slimLevel（瘦身档位）、max
     features/heap-guard/snapshots/    V8 堆快照
     features/heap-guard/titles.json   会话名缓存（按会话 id，带 mtime/size 校验）
     features/steward/journal-YYYYMMDD.jsonl  总管观察日志（按天滚动，可重放重建内存索引）
+    features/steward/steward.db      总管库（node:sqlite；裁剪环境下降级为 steward.db.json + steward.ops.jsonl）
+    features/steward/rules/overrides/ 规则覆盖（*.json，改完 POST api/rules/reload）
+    features/steward/slim-backup-*   被 wf.host.protect 触发瘦身时的原文件备份
 
 瘦身档位（bin/slim.mjs）：
 
@@ -290,6 +348,10 @@ setup(scope) 可用的 scope API：
 - **瘦身不是万能**：它减少的是"下次读进堆"的字节；已经加载在堆里的会话，除非重启，
   插件无法释放（DSH 没有空闲卸载路径）。真正的大头建议反馈上游：
   idle session unload/LRU、session/close 命令、裁剪 Session.log/eventsSnapshot、宿主加 --expose-gc。
+- **总管只在一个进程里写**：agent 只存在于一台机的宿主进程，所以"谁管它"是物理事实，不需要选主；
+  幂等键 + 版本 CAS 覆盖了重复动作与双端审批这两个真实冲突面。
+- **联邦默认关**：secret 不填就不建 peer、不收 envelope；跨机只交换摘要与审批，原始日志不出本机。
+- **规则是 JSON 不是 YAML**：不为规则格式引第三方解析器，overrides 也走 JSON。
 - **等级阈值是按进程上限算的**：如果给宿主加了 --max-old-space-size=8192，
   上限定为 8192，阈值相应变成 4915/6144/6963 MB。
 

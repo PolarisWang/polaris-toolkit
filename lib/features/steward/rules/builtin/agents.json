@@ -1,0 +1,154 @@
+[
+  {
+    "id": "agent.stalled",
+    "version": 1,
+    "title": "agent 静默但仍是 running",
+    "severity": "warning",
+    "cooldownSec": 900,
+    "shadowHours": 0,
+    "enabledByDefault": true,
+    "when": "agent/tick",
+    "if": {
+      "all": [
+        {
+          "eq": [
+            "status",
+            "running"
+          ]
+        },
+        {
+          "gte": [
+            "silenceMs",
+            480000
+          ]
+        },
+        {
+          "const": true
+        }
+      ]
+    },
+    "actions": [
+      {
+        "workflow": "wf.agent.stall",
+        "level": 1,
+        "params": {
+          "text": "agent 静默超过 8 分钟"
+        }
+      }
+    ]
+  },
+  {
+    "id": "agent.error",
+    "version": 1,
+    "title": "agent 报错",
+    "severity": "error",
+    "cooldownSec": 300,
+    "shadowHours": 0,
+    "enabledByDefault": true,
+    "when": "agent/error",
+    "if": {
+      "const": true
+    },
+    "actions": [
+      {
+        "workflow": "wf.notify",
+        "level": 1,
+        "params": {
+          "text": "agent 报错"
+        }
+      }
+    ]
+  },
+  {
+    "id": "agent.question.pending",
+    "version": 1,
+    "title": "agent 在等我回答",
+    "severity": "warning",
+    "cooldownSec": 600,
+    "shadowHours": 0,
+    "enabledByDefault": true,
+    "when": "agent/tick",
+    "if": {
+      "exists": "question"
+    },
+    "actions": [
+      {
+        "workflow": "wf.ask",
+        "level": 1,
+        "params": {
+          "text": "agent 有一个待答提问"
+        }
+      }
+    ]
+  },
+  {
+    "id": "agent.subagent.failed",
+    "version": 1,
+    "title": "子 agent 结束但不算成功",
+    "severity": "warning",
+    "cooldownSec": 300,
+    "shadowHours": 0,
+    "enabledByDefault": true,
+    "when": "subagent/end",
+    "if": {
+      "any": [
+        {
+          "eq": [
+            "status",
+            "failed"
+          ]
+        },
+        {
+          "eq": [
+            "status",
+            "cancelled"
+          ]
+        }
+      ]
+    },
+    "actions": [
+      {
+        "workflow": "wf.notify",
+        "level": 1,
+        "params": {
+          "text": "子 agent 未正常结束"
+        }
+      }
+    ]
+  },
+  {
+    "id": "agent.module.unassigned",
+    "version": 1,
+    "title": "agent 归不到模块",
+    "severity": "info",
+    "cooldownSec": 1800,
+    "shadowHours": 0,
+    "enabledByDefault": true,
+    "when": "agent/tick",
+    "if": {
+      "all": [
+        {
+          "eq": [
+            "moduleId",
+            "unassigned"
+          ]
+        },
+        {
+          "gte": [
+            "ageMs",
+            1800000
+          ]
+        }
+      ]
+    },
+    "actions": [
+      {
+        "workflow": "wf.notify",
+        "level": 1,
+        "params": {
+          "text": "有 agent 30 分钟仍无人认领"
+        }
+      }
+    ]
+  }
+]
