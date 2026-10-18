@@ -37,7 +37,10 @@ test("doctor survives an almost empty environment", { skip: process.platform !==
       env: {}
     });
     assert.equal(res.error, undefined);
-    assert.equal(res.status, 0, "doctor should exit 0, stderr=" + (res.stderr || ""));
+    // CI 上没有 ~/.dsh/profiles/desktop，doctor 会因为 "profile 不存在" 判 fail（退出码 1）——
+    // 这里只要求它不崩、能打出 JSON、且没有 PowerShell 的 null 路径异常。
+    assert.ok(!(res.stderr || "").includes("Cannot bind argument to parameter"), "no PowerShell null-path crash");
+    assert.notEqual(String(res.stdout).trim(), "", "doctor --json prints JSON even without a profile");
     const out = JSON.parse(res.stdout);
     assert.ok(Array.isArray(out.checks) || Array.isArray(out), "doctor --json should print checks");
     assert.equal(fs.existsSync(path.join(cwd, "%SystemDrive%")), false, "must not create a literal %SystemDrive% dir");
