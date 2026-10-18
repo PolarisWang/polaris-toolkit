@@ -26,7 +26,9 @@ if ($Restore.Length -gt 0) {
   Write-Host ('restored package.json from ' + $Restore)
 }
 else {
-  $m = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($manifest))
+  $rawText = [System.IO.File]::ReadAllText($manifest)
+  if ($rawText.Length -gt 0 -and $rawText[0] -eq [char]0xFEFF) { $rawText = $rawText.Substring(1) }
+  $m = ConvertFrom-Json -InputObject $rawText
   $changed = $false
   if ($m.dependencies -and $m.dependencies.PSObject.Properties[$pkgName]) { $m.dependencies.PSObject.Properties.Remove($pkgName); $changed = $true }
   if ($m.dependenciesMeta -and $m.dependenciesMeta.PSObject.Properties[$pkgName]) { $m.dependenciesMeta.PSObject.Properties.Remove($pkgName); $changed = $true }
@@ -36,7 +38,10 @@ else {
   }
   if ($changed) {
     $text = ConvertTo-Json -InputObject $m -Depth 12
-    [System.IO.File]::WriteAllText($manifest, $text, (New-Object System.Text.UTF8Encoding($true)))
+    # No BOM: DSH reads this file with a bare JSON.parse (see install.ps1).
+    [System.IO.File]::WriteAllText($manifest, $text, (New-Object System.Text.UTF8Encoding($false)))
+    $bytes = [System.IO.File]::ReadAllBytes($manifest)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw 'refusing to leave a UTF-8 BOM in package.json - DSH would fail to boot' }
     Write-Host ('removed ' + $pkgName + ' from dependencies / dependenciesMeta / dsh.profile.bundles')
   }
   else { Write-Host ('package.json does not list ' + $pkgName) }

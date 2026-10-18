@@ -23,6 +23,16 @@ DSH 只把 `dsh.profile.bundles` 里的包变成 Loader entry（仅仅写进 dep
 `node_modules/polaris-toolkit`（不能用符号链接：插件自身的 `@deepseek-ai/*` 依赖要按该 profile 的
 node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变了必须重启 DSH。
 
+⚠ profile 的 `package.json` 必须**无 UTF-8 BOM**：`dsh-app-boot` 的 `readProfileManifest()`
+（`@deepseek-ai/dsh-app-boot/lib/index.js:913`）对文件原始文本直接 `JSON.parse`，一个 BOM 就会让宿主在启动阶段
+抛 `DesktopHostFatalError: Unexpected token '\uFEFF'`，此后每次启动都失败（2026-10-18 的真实事故：
+安装脚本用 `UTF8Encoding($true)` 写 manifest，DSH 隔天重启后连续三次启动即崩，最后只能删掉 package.json 救回）。
+脚本现在用 `UTF8Encoding($false)` 写、读时剥 BOM、写完再用宿主 node 按 DSH 的方式 `JSON.parse` 校验一次，失败回滚。
+（校验用的 JS 走临时文件执行：把带引号的代码内联给 `node -e` 会被 Windows PowerShell 撕掉引号。）
+
+⚠ 反过来，**`.ps1` 源文件自身必须带 UTF-8 BOM**：Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本按 ANSI/GBK 解码，
+中文注释会吃掉后面的代码，症状是行号错位、函数返回 `$null`。用 `tools.edit` 改完这类文件要重新存成 UTF-8 with BOM。
+
 ## 2. 目录
 
     lib/index.js                 插件入口：PREFIX = "/__polaris"，Config = { features: {} }

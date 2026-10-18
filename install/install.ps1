@@ -35,13 +35,21 @@ $oldName = 'dsh-heap-guard'
 
 function Get-Manifest {
   param([string]$Path)
-  return (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($Path)))
+  # DSH parses the manifest with a bare JSON.parse, so a UTF-8 BOM in front makes the
+  # host die at startup ("Unexpected token <U+FEFF>"). Read defensively and strip it.
+  $text = [System.IO.File]::ReadAllText($Path)
+  if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+  return (ConvertFrom-Json -InputObject $text)
 }
 
 function Save-Manifest {
   param([string]$Path, $Manifest)
   $text = ConvertTo-Json -InputObject $Manifest -Depth 12
-  [System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($true)))
+  # UTF8Encoding($false) = NO BOM. A BOM here bricks the next DSH start: dsh-app-boot
+  # readProfileManifest() calls JSON.parse on the raw text and JSON.parse rejects U+FEFF.
+  [System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($false)))
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw "refusing to leave a UTF-8 BOM in package.json - DSH would fail to boot" }
 }
 
 $pkgRoot = Split-Path -Parent $PSScriptRoot
@@ -85,6 +93,24 @@ try {
   if ($vb.Count -lt 1) { throw 'dsh.profile.bundles ended up empty' }
   $vs = [string]$verify.dependencies.$pkgName
   if ($vs.Length -eq 0) { throw ('dependencies.' + $pkgName + ' missing after write') }
+  # Parse it exactly like DSH does before declaring success (this is the check that
+  # would have caught the BOM incident). The JS lives in a temp file because passing
+  # quotes through `node -e` from Windows PowerShell mangles the script.
+  $probeNode = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
+  if (Test-Path -LiteralPath $probeNode) {
+    $probeJs = Join-Path $env:TEMP ('polaris-manifest-probe-' + $stamp + '.cjs')
+    $probeSrc = @'
+const fs = require("node:fs");
+try { JSON.parse(fs.readFileSync(process.argv[2], "utf8")); console.log("parse-ok"); }
+catch (e) { console.log("parse-fail: " + e.message); process.exit(1); }
+'@
+    [System.IO.File]::WriteAllText($probeJs, $probeSrc, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+      $probe = (& $probeNode $probeJs $manifest 2>&1 | Out-String).Trim()
+      if ($LASTEXITCODE -ne 0) { throw ('DSH would not be able to parse package.json: ' + $probe) }
+    }
+    finally { Remove-Item -LiteralPath $probeJs -Force -ErrorAction SilentlyContinue }
+  }
   Write-Host ('manifest: dependencies.' + $pkgName + ' = ' + $vs + ' (injected), bundles = ' + ($vb -join ', '))
 }
 catch {
