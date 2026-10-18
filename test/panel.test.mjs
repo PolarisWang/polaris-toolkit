@@ -158,6 +158,10 @@ const PANELS = [
       assert.ok(Number(run.els.get("mods-count").textContent) >= 5, "模块分组渲染");
       assert.ok(run.els.get("settings-form").innerHTML.includes("data-path"), "设置表单按 data-path 渲染了旋钮");
       assert.ok(/settings\.json/.test(run.els.get("set-msg").textContent), "设置区显示配置文件路径");
+      const stewTree = run.els.get("stewards").innerHTML;
+      assert.ok(stewTree.includes("when host/tick"), "决策树渲染成人话步骤（when）");
+      assert.ok(stewTree.includes("call judge.host.heap.high"), "决策树渲染成人话步骤（call）");
+      assert.ok(stewTree.includes("if "), "决策树分支可见");
       assert.ok(run.els.get("approvals").innerHTML.length > 0, "拍板队列至少给了一句话");
     }
   },
