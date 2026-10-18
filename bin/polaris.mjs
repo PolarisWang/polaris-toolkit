@@ -253,13 +253,39 @@ function install(opts) {
   if (opts.noBundles === true) args.push("-NoBundles");
   if (opts.noPnpm === true) args.push("-NoPnpm");
   if (opts.keepOld === true) args.push("-KeepOld");
-  const shell = process.env.ComSpec !== undefined ? "powershell.exe" : "powershell";
+  // PATH 也可能不存在（PTC 运行器），此时裸名 "powershell" 会 ENOENT —— 先按绝对路径找。
+  const sysRoot = process.env.SystemRoot !== undefined && process.env.SystemRoot.length > 0 ? process.env.SystemRoot : "C:\\Windows";
+  const psExe = path.join(sysRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const shell = fs.existsSync(psExe) ? psExe : "powershell.exe";
   process.stdout.write("running: " + shell + " " + args.join(" ") + "\n\n");
-  const childEnv = Object.assign({}, process.env, {
-    USERPROFILE: process.env.USERPROFILE === undefined || process.env.USERPROFILE.length === 0 ? home() : process.env.USERPROFILE,
-    TEMP: process.env.TEMP === undefined || process.env.TEMP.length === 0 ? os.tmpdir() : process.env.TEMP,
-    TMP: process.env.TMP === undefined || process.env.TMP.length === 0 ? os.tmpdir() : process.env.TMP
-  });
+  // 宿主（PTC 运行器）启动的子进程环境可能几乎是空的：PowerShell 里任何一个
+  // Join-Path $env:XXX 拿到 null 都会直接抛 "Cannot bind argument to parameter 'Path'"。
+  // 所以这里把 Windows 上真正会用到的那几个变量补齐，而不是只补 USERPROFILE。
+  const pick = (name) => (process.env[name] === undefined || process.env[name].length === 0 ? undefined : process.env[name]);
+  // os.tmpdir() 在 TEMP/TMP 都为空时返回相对的 "undefined\\temp"（Node 的历史行为），
+  // 落到子进程里就是一个相对于当前目录的怪路径 —— 只在这种情况下改用用户临时目录。
+  const sysTmp = (() => {
+    const t = os.tmpdir();
+    return path.isAbsolute(t) ? t : path.join(home(), "AppData", "Local", "Temp");
+  })();
+  const fallbacks = {
+    USERPROFILE: pick("USERPROFILE") === undefined ? home() : pick("USERPROFILE"),
+    LOCALAPPDATA: pick("LOCALAPPDATA") === undefined ? path.join(home(), "AppData", "Local") : pick("LOCALAPPDATA"),
+    APPDATA: pick("APPDATA") === undefined ? path.join(home(), "AppData", "Roaming") : pick("APPDATA"),
+    TEMP: pick("TEMP") === undefined ? sysTmp : pick("TEMP"),
+    TMP: pick("TMP") === undefined ? sysTmp : pick("TMP"),
+    SystemRoot: pick("SystemRoot") === undefined ? "C:\\Windows" : pick("SystemRoot"),
+    // 缺 SystemDrive 时 PowerShell 启动会在**当前目录**里造一个字面量 "%SystemDrive%" 目录
+    // （里面是 ProgramData\Microsoft\Windows\Caches\*.db）—— 已实测复现，务必补上。
+    SystemDrive: pick("SystemDrive") === undefined ? "C:" : pick("SystemDrive"),
+    ProgramData: pick("ProgramData") === undefined ? "C:\\ProgramData" : pick("ProgramData"),
+    ALLUSERSPROFILE: pick("ALLUSERSPROFILE") === undefined ? "C:\\ProgramData" : pick("ALLUSERSPROFILE"),
+    windir: pick("windir") === undefined ? "C:\\Windows" : pick("windir"),
+    ComSpec: pick("ComSpec") === undefined ? "C:\\Windows\\System32\\cmd.exe" : pick("ComSpec"),
+    PATHEXT: pick("PATHEXT") === undefined ? ".COM;.EXE;.BAT;.CMD" : pick("PATHEXT"),
+    PATH: pick("PATH") === undefined ? "C:\\Windows\\System32;C:\\Windows" : pick("PATH")
+  };
+  const childEnv = Object.assign({}, process.env, fallbacks);
   const res = spawnSync(shell, args, { stdio: "inherit", env: childEnv });
   if (res.error !== undefined) {
     process.stderr.write("启动 PowerShell 失败: " + String(res.error.message) + "\n");

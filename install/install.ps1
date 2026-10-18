@@ -29,6 +29,12 @@ $PSNativeCommandUseErrorActionPreference = $false
 $userHome = $env:USERPROFILE
 if ([string]::IsNullOrEmpty($userHome)) { $userHome = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile) }
 if ([string]::IsNullOrEmpty($userHome)) { $userHome = $HOME }
+# 子进程环境可能几乎是空的（DSH PTC 运行器只透传少数变量），所以每个路径都自带兜底：
+# 拿不到 LOCALAPPDATA / TEMP 就按 USERPROFILE 推，绝不把 null 交给 Join-Path。
+$localAppData = $env:LOCALAPPDATA
+if ([string]::IsNullOrEmpty($localAppData)) { $localAppData = Join-Path $userHome 'AppData\Local' }
+$tmpBase = $env:TEMP
+if ([string]::IsNullOrEmpty($tmpBase)) { $tmpBase = [System.IO.Path]::GetTempPath() }
 if ([string]::IsNullOrEmpty($Profile)) { $Profile = Join-Path $userHome '.dsh\profiles\desktop' }
 
 $pkgName = 'polaris-toolkit'
@@ -97,11 +103,10 @@ try {
   # Parse it exactly like DSH does before declaring success (this is the check that
   # would have caught the BOM incident). The JS lives in a temp file because passing
   # quotes through `node -e` from Windows PowerShell mangles the script.
-  $probeNode = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
+  $probeNode = Join-Path $localAppData 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe'
   if (Test-Path -LiteralPath $probeNode) {
-    $tmpDir = $env:TEMP
-  if ([string]::IsNullOrEmpty($tmpDir)) { $tmpDir = [System.IO.Path]::GetTempPath() }
-  $probeJs = Join-Path $tmpDir ('polaris-manifest-probe-' + $stamp + '.cjs')
+    $tmpDir = $tmpBase
+    $probeJs = Join-Path $tmpDir ('polaris-manifest-probe-' + $stamp + '.cjs')
     $probeSrc = @'
 const fs = require("node:fs");
 try { JSON.parse(fs.readFileSync(process.argv[2], "utf8")); console.log("parse-ok"); }
@@ -125,7 +130,7 @@ catch {
 $nodeExe = $null
 $pnpmCmd = $null
 if (-not $NoPnpm) {
-  $rt = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies'
+  $rt = Join-Path $localAppData 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies'
   $candNode = Join-Path $rt 'node\bin\node.exe'
   $candPnpm = Join-Path $rt 'pnpm\bin\pnpm.cjs'
   if (Test-Path -LiteralPath $candNode) { $nodeExe = $candNode }
@@ -218,7 +223,7 @@ Write-Host ('State: ' + (Join-Path $userHome '.dsh\polaris-toolkit'))
 $doctorNode = $nodeExe
 if (-not $doctorNode) {
   $cand = ''
-  if (-not [string]::IsNullOrEmpty($env:LOCALAPPDATA)) { $cand = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe' }
+  if (-not [string]::IsNullOrEmpty($env:LOCALAPPDATA)) { $cand = Join-Path $localAppData 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies\node\bin\node.exe' }
   if (Test-Path -LiteralPath $cand) { $doctorNode = $cand }
 }
 $polarisCli = Join-Path $pkgRoot 'bin\polaris.mjs'

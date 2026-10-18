@@ -15,6 +15,12 @@ $PSNativeCommandUseErrorActionPreference = $false
 $userHome = $env:USERPROFILE
 if ([string]::IsNullOrEmpty($userHome)) { $userHome = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile) }
 if ([string]::IsNullOrEmpty($userHome)) { $userHome = $HOME }
+# 子进程环境可能几乎是空的（DSH PTC 运行器只透传少数变量），所以每个路径都自带兜底：
+# 拿不到 LOCALAPPDATA / TEMP 就按 USERPROFILE 推，绝不把 null 交给 Join-Path。
+$localAppData = $env:LOCALAPPDATA
+if ([string]::IsNullOrEmpty($localAppData)) { $localAppData = Join-Path $userHome 'AppData\Local' }
+$tmpBase = $env:TEMP
+if ([string]::IsNullOrEmpty($tmpBase)) { $tmpBase = [System.IO.Path]::GetTempPath() }
 if ([string]::IsNullOrEmpty($Profile)) { $Profile = Join-Path $userHome '.dsh\profiles\desktop' }
 
 $pkgName = 'polaris-toolkit'
@@ -50,7 +56,7 @@ else {
 # 让 pnpm 把注入目录与锁文件一起清掉；没有 pnpm 就手工删目录。
 $removed = $false
 if (-not $NoPnpm) {
-  $rt = Join-Path $env:LOCALAPPDATA 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies'
+  $rt = Join-Path $localAppData 'Programs\DeepSeek Harness\resources\runtime\primary-runtime\dependencies'
   $nodeExe = Join-Path $rt 'node\bin\node.exe'
   $pnpmCjs = Join-Path $rt 'pnpm\bin\pnpm.cjs'
   if (-not (Test-Path -LiteralPath $nodeExe)) { $c = Get-Command node -ErrorAction SilentlyContinue; if ($c) { $nodeExe = $c.Source } }
