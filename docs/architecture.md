@@ -55,7 +55,7 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
       state.js                   只读视图；metrics.js 指标发布；brain.js 规则->工作流 + tick
       http.js                    路由表 + 5 个 agent 工具 + action/status
       actuators/gated.js         echo/live 闸门（echo 只把拟执行动作写进账本）
-      panel.js                   金字塔面板：结论 / 控制条 / 模块 / 待批 / 工作流 / agent / 信号
+      panel.js                   金字塔面板：结论 / 待处理 / 控制 / 正在发生 / agent 明细 / 记录 / 维护
       core/{store,db,schema,approvals,bus,health}.js  账本 + 12 表（sqlite 或 JSON 降级）+ 审批
       wf/{engine,defs}.js        持久工作流引擎与 5 个内置流程
       rules/{expr,loader,evaluator}.js + builtin/*.json  确定性规则与 13 条内置规则
@@ -170,6 +170,16 @@ lib/client.js 用槽位注册，四处入口共享同一个落点：
     操作行     按钮 + 瘦身档位 + 每次上限
     会话表     名称 / ID / 工作区 / 大小 / 时间 / 每行清理
     折叠细节   内存分代、系统磁盘、快照、运行状态
+
+Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
+
+    hero       一个字状态 + 一句话结论 + 6 个 KPI（堆%、P99、agent、流程/待批、信号、策略）
+    待处理     待批卡片 + 卡住的 agent / critical 信号点名（空则一行灰字）
+    控制       自动动作 / act echo-live / 飞书 / 立即汇报
+    正在发生   工作流表 + 模块卡片（按 agent 数降序、未归类沉底、占比条）
+    agent 表   卡住 -> 待决 -> 运行中 -> 空闲，同类按最近活动
+    记录       echo 拟执行 + 信号流
+    维护       折叠：强制采样 / 归类 / 重载规则 / 刷新 + 页脚
 
 ## 7. 硬约束
 

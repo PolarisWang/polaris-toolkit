@@ -73,7 +73,7 @@ Heap Guard 做三件事：
             brain.js        规则 -> 工作流（fire/evaluate*/tick + 事件桥 + heap/critical 订阅）
             http.js         路由表 + agent 工具 + action/status（HTTP 层整体搬出）
             actuators/gated.js  echo/live 闸门（actMode=echo 时只把拟执行动作写进账本）
-            panel.js        金字塔面板（结论 / 控制条 / 模块 / 待批 / 工作流 / agent / 信号）
+            panel.js        金字塔面板（结论 / 待处理 / 控制 / 正在发生 / agent 明细 / 记录 / 维护）
             core/           账本 store、db（sqlite 或 JSON 降级）、schema、approvals、健康采样
             wf/             引擎 engine.js（三段式 / 定时器 / 租约 / 重试 / DLQ）与内置流程 defs.js
             rules/          表达式求值 expr.js、加载 loader.js、求值 evaluator.js、builtin/*.json
@@ -131,6 +131,14 @@ doctor 逐项给出 ok/warn/fail 与修复建议，有 fail 时退出码非 0：
 
 面板页脚会显示这份记录的版本 / 装机时间 / 来源路径，装完没重启或装到了别的 profile 一眼就能看出来。
 
+两个入口都按"空环境"加固过：DSH 的 PTC 运行器启动的子进程里 `process.env` 几乎是空的，而 PowerShell 里
+任何一个 `Join-Path $env:XXX` 拿到 null 都会直接抛 `Cannot bind argument to parameter 'Path' because it is null`
+（清单已写入但被回滚，看起来像"装到一半失败"）。所以 `bin/polaris.mjs` 会先补齐 USERPROFILE / LOCALAPPDATA /
+APPDATA / TEMP / TMP / SystemRoot / SystemDrive / ProgramData，再按绝对路径找 powershell.exe；两个 .ps1 内部也
+各自兜底（拿不到 LOCALAPPDATA 就按 USERPROFILE 推，拿不到 TEMP 就用 `[IO.Path]::GetTempPath()`）。
+顺带一条经验：子进程缺 SystemDrive 时，PowerShell 启动会在**当前目录**里造一个字面量 `%SystemDrive%` 目录
+（内容为 `ProgramData\Microsoft\Windows\Caches\*.db`），曾被 `git add -A` 误提交 —— 现在有回归测试守着。
+
 **安装/升级后必须重启 DSH**：host 半边在 DSH 启动时加载，页面刷新不够（客户端半边刷新即可）。
 
 升级：改完仓库重新跑一次 install.ps1。
@@ -182,10 +190,17 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 一条链：**观察 → 归类 → 规则 → 持久工作流 → 动作 / 审批 / 上报**。默认是"只通知"（L1），
 任何真正的副作用都要显式打开。设计依据见 [docs/steward-design.md](docs/steward-design.md)。
 
-- 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面，5 秒自刷新。自上而下：
-  结论行（堆 / P99 / agent 数 / 待决信号 / 运行流程与待批 / 动作预算 / 状态）→ 控制条
-  （自动动作、飞书通知、立即汇报、强制采样、重载规则）→ 模块卡片 → 待批 → 工作流表 →
-  agent 明细（会话名 / 模块 / 状态 / 静默 / 轮次 / 工作目录 / 归属依据）→ 信号流 → 页脚（journal / 规则 hash / 降级）。
+- 面板：`/__polaris/steward/`，入口卡片里在 Heap Guard 下面，5 秒自刷新（页面隐藏时停）。自上而下按"要不要现在动手"分层：
+  1. 结论条：一个字的状态（平稳 / 偏高 / 吃紧，按堆占用 65% / 80% 分档）+ 一句话（几个 agent 在跑、
+     卡住几个、几项等你批、堆多少、预算用掉多少），右边 6 个 KPI（宿主堆带百分比、P99 带 max、
+     agent、流程 / 待批、信号、策略）。
+  2. 需要你处理：待批卡片（同意 / 拒绝 + 过期时间），以及卡住的 agent、critical 信号的点名行；没有就一行灰字。
+  3. 控制：自动动作 / act echo-live / 飞书通知 / 立即汇报——这四个按钮改的是它下一步怎么动。
+  4. 正在发生：在跑的工作流表，下面模块卡片（按 agent 数降序、未归类沉底、带占比条）。
+  5. Agent 明细：卡住 → 待决 → 运行中 → 空闲排序，同类按最近活动；列是会话名 / 模块 / 状态 / 静默 /
+     轮次 / 工作目录 / 归属依据 / 重判。
+  6. 记录：echo 拟执行 + 信号流。
+  7. 维护：折叠区，强制采样 / 按 agent 判断归类 / 重载规则 / 刷新，加上页脚（journal / 规则 hash / 降级 / export）。
 - 观察：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、
   `session/created|disposed|event|title` 共 13 类事件，外加每 5 秒 `ctx.agents.list()` 对账
   （宿主只在状态变化时发事件，卡死的 running 不会自己发）；running 且 8 分钟无事件 → `stalled`。
