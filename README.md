@@ -196,11 +196,16 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
      agent、流程 / 待批、信号、策略）。
   2. 需要你处理：待批卡片（同意 / 拒绝 + 过期时间），以及卡住的 agent、critical 信号的点名行；没有就一行灰字。
   3. 控制：自动动作 / act echo-live / 飞书通知 / 立即汇报——这四个按钮改的是它下一步怎么动。
-  4. 正在发生：在跑的工作流表，下面模块卡片（按 agent 数降序、未归类沉底、带占比条）。
-  5. Agent 明细：卡住 → 待决 → 运行中 → 空闲排序，同类按最近活动；列是会话名 / 模块 / 状态 / 静默 /
-     轮次 / 工作目录 / 归属依据 / 重判。
-  6. 记录：echo 拟执行 + 信号流。
-  7. 维护：折叠区，强制采样 / 按 agent 判断归类 / 重载规则 / 刷新，加上页脚（journal / 规则 hash / 降级 / export）。
+  4. 交办：一句话 + 验收标准 + 派给谁（新开会话或某个已有会话）→ 建单；下面按状态排队列，
+     每单可直接派发 / 完成 / 失败 / 取消。
+  5. 对话：主管会话的正文（你 / 主管 / 工具 / 系统四种行），底部输入框回车即发；可新建主管会话、
+     绑定已有会话、解绑。这就是"跟总管说话"的入口，和原生会话里打字等价。
+  6. 正在发生：在跑的工作流表，下面模块卡片（按 agent 数降序、未归类沉底、带占比条）。
+  7. Agent 明细：卡住 → 待决 → 运行中 → 空闲排序，同类按最近活动；列是会话名 / 模块 / 状态 / 静默 /
+     轮次 / 目标 / 工作目录 / 归属依据 / 看 / 重判。「看」打开右侧抽屉：目标、待办进度、轮次、
+     最后活动、最后一句、12 条人话轨迹（读的是该会话真实的 goal/change、todo/write、turn/end 事件）。
+  8. 记录：echo 拟执行 + 信号流。
+  9. 维护：折叠区，强制采样 / 按 agent 判断归类 / 重载规则 / 刷新，加上页脚（journal / 规则 hash / 降级 / export）。
 - 观察：`agent/created|disposed|status|error|request-error|turn-stopping|inbox/*`、`subagent/*`、
   `session/created|disposed|event|title` 共 13 类事件，外加每 5 秒 `ctx.agents.list()` 对账
   （宿主只在状态变化时发事件，卡死的 running 不会自己发）；running 且 8 分钟无事件 → `stalled`。
@@ -217,6 +222,24 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
   host / 启用；id 必须匹配 `^[a-zA-Z0-9_-]{1,32}$`，`unassigned` 保留不可删。保存后立刻 `routeAll()` 重算归属，
   指向被删模块的 pin 自动清掉（响应里的 `droppedPins`）。agent 表里的下拉框仍是 pin（固定到某模块，永久生效），
   「重判」按钮强制重问一次；`GET api/modules` 返回 `modules`（计数）+ `defs`（编辑用定义）+ `pins`。
+- 交办（任务队列）：`tasks` 表 + 状态机 `queued → assigned → running → review → done / failed / cancelled`，
+  `GET/POST api/tasks`（op = create / update / dispatch / complete / fail / cancel）。派单时把标题、要求、
+  验收标准拼成一段 prompt，交给 `sessionController.prompt`（`mode:"followup"`，requestId 幂等）；
+  目标可以是 `session:<id>`、`agent:<id>`，或留空即新开一个会话。`tasks.tick()` 按 `tasks.concurrency`
+  （默认 1）补槽、按 priority 取单；会话 `turn/end` 时该会话上 running 的单自动转 review。
+  `actMode="echo"` 下派发只写 `assigned` + 一行"动作已生成但未发送"，**不建会话、不发消息**。
+- 对话（主管会话）：`GET/POST api/chat`（op = send / create / bind / unbind / transcript）。`create` 走
+  `sessionController.create` 建一个真会话、改名、写进 settings，并先发一段总管人设；`send` 直接
+  `prompt` 进该会话（这一步**不过 echo 闸门**——主人自己说话当然要送达）。`transcript` 把
+  `user/message`、`assistant/message`、`tool/result`、`turn/end` 折叠成可读的几行。
+- 明细抽屉：`GET api/detail?session=<id>` 读该会话事件，折出目标 / 待办进度 / 轮次 / 最后一句 / 轨迹；
+  缓存 4 秒（事件）与 20 秒（详情），面板只在打开抽屉时读，不参与 5 秒轮询。
+- 分级授权：`actLevel` 是"总管自己能动手到哪一层"的内层闸门，与 `actMode` 正交：
+  L1 只通知；L2 允许只读/低危动作（collect、slim、reload rules、建单）；L3 才允许写（派单、开会话、
+  steer、cancel、改设置）。默认 L2，`GET api/policy` 会列出当前 allows / denies。主人点按钮不受限，
+  它自己决定时才查这一层。
+- 升级退役：`escalation.enabled` 打开后，卡住的 agent 按阶梯处理——先 steer 问一句卡在哪，冷却后再
+  cancel，仍不动就只报警一次；每次动作都过 `actLevel` 与 `actMode` 两道闸，冷却默认 600 秒。
 - 规则：13 条内置规则（`lib/features/steward/rules/builtin/{agents,system,social}.json`），
   字段 `id/version/when/if/actions/cooldownSec/severity/enabledByDefault/params`；表达式是自研的
   确定性求值器（不 eval、不 Function）。用户覆盖放 `~/.dsh/polaris-toolkit/rules/overrides/*.json`
@@ -238,9 +261,9 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 - 审批：`POST api/answer {id, answer, version}` 带版本 CAS，两个端同时点只有一个生效；到期自动作废。
 - 上报：desktop 通道（内存环形 200 条）永远可用；飞书走本机 `lark-cli`
   （`notify.larkEnabled=true` 才启用，`notify.minSeverity` 默认 warning）。
-- 会话：`session.mode=manual`（默认）不自动开会话；打开后用
-  `agents.create({preset:"steward", title:"大内总管"})` 绑定并按 `rotateTurns/rotateTokens`
-  （默认 200 轮 / 300k token）自适应轮换，压力公式见设计文档 8.5。
+- 会话：主管会话由面板「新建主管会话」或 `POST api/chat {op:"create"}` 建立
+  （`sessionController.create` → 改名 → 写 `session.id`），之后 `session.mode=auto` 才会自己再开；
+  `rotateTurns/rotateTokens`（默认 200 轮 / 300k token）留给换届预算，压力公式见设计文档 8.5。
 - 联邦：只有 `federation.secret` 长度 >= 16 才启用。HMAC-SHA256 信封、nonce 去重、
   5 分钟时钟偏差、命令白名单（ask/approve/collect/set-policy/pause/resume），默认关。
 - 加载安全：`setup` 外层 try/catch，内部每步都包一层 attempt；任何服务缺失只降级

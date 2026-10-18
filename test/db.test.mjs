@@ -12,9 +12,9 @@ function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "polaris-db-"));
 }
 
-test("schema lists the twelve design tables", () => {
-  assert.equal(Object.keys(TABLES).length, 12);
-  for (const name of ["hosts", "modules", "subjects", "signals", "routing", "runs", "steps", "timers", "actions", "approvals", "dlq", "settings_history"]) {
+test("schema lists the design tables plus the task queue", () => {
+  assert.equal(Object.keys(TABLES).length, 13);
+  for (const name of ["hosts", "modules", "subjects", "signals", "routing", "runs", "steps", "timers", "actions", "approvals", "dlq", "settings_history", "tasks"]) {
     assert.ok(TABLES[name] !== undefined, name + " missing");
   }
 });

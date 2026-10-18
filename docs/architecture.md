@@ -54,12 +54,17 @@ node_modules 解析）。改完仓库必须重跑 install.ps1，宿主代码变�
       config.js                  Config/settings/settingsSchema/normalize/readSettings
       state.js                   只读视图；metrics.js 指标发布；brain.js 规则->工作流 + tick
       http.js                    路由表 + 5 个 agent 工具 + action/status
+      policy.js                  分级授权：actLevel L1/L2/L3 与动作需求表（gate 只记日志不抛）
+      tasks.js                   交办队列：tasks 表状态机 + 派单（prompt 幂等）+ tick 补槽 + turn/end 转 review
       actuators/gated.js         echo/live 闸门（echo 只把拟执行动作写进账本）
-      panel.js                   金字塔面板：结论 / 待处理 / 控制 / 正在发生 / agent 明细 / 记录 / 维护
+      panel.js                   金字塔面板：结论 / 待处理 / 控制 / 交办 / 对话 / 正在发生 /
+                                 agent 明细 / 记录 / 维护
       core/{store,db,schema,approvals,bus,health}.js  账本 + 12 表（sqlite 或 JSON 降级）+ 审批
       wf/{engine,defs}.js        持久工作流引擎与 5 个内置流程
       rules/{expr,loader,evaluator}.js + builtin/*.json  确定性规则与 13 条内置规则
       session/{rollup,pressure,handoff,bootstrap}.js    汇总 / 轮换 / 交接 / 会话绑定
+      session/{events,chat,detail}.js                  事件读取（4s 缓存）/ 主管会话（建-绑-发-回放）/
+                                                      会话明细折叠（目标、待办、轨迹）
       actuators/{notify,prompt,answer}.js + channels/*  动作出口与通知通道
       federation/{envelope,peer}.js                     HMAC 信封与白名单命令
     lib/panel.js                 工具包外壳页（左功能卡片 + 右 iframe）
@@ -176,10 +181,47 @@ Steward 面板用同一套金字塔，但按"要不要主人动手"分层：
     hero       一个字状态 + 一句话结论 + 6 个 KPI（堆%、P99、agent、流程/待批、信号、策略）
     待处理     待批卡片 + 卡住的 agent / critical 信号点名（空则一行灰字）
     控制       自动动作 / act echo-live / 飞书 / 立即汇报
+    交办       一句话 + 验收标准 + 派给谁 -> 建单；下面按状态排队列 + 派发/完成/失败/取消
+    对话       主管会话正文（你 / 主管 / 工具 / 系统）+ 输入框；新建 / 绑定 / 解绑
     正在发生   工作流表 + 模块卡片（按 agent 数降序、未归类沉底、占比条）
-    agent 表   卡住 -> 待决 -> 运行中 -> 空闲，同类按最近活动
+    agent 表   卡住 -> 待决 -> 运行中 -> 空闲，同类按最近活动；行尾「看」开详情抽屉
     记录       echo 拟执行 + 信号流
     维护       折叠：强制采样 / 归类 / 重载规则 / 刷新 + 页脚
+
+## 6.5 指挥台：对话、交办、明细、分级授权
+
+四件事共用一条链：**主人说话 / 下单 -> 总管落到某个会话 -> 会话产生事件 -> 面板读回事件**。
+面板不直接写会话，全部经 `sessionController` 与 `sessionQuery`，且读路径带缓存（否则 5 秒轮询会把
+整份会话日志反复 load 进宿主堆）。
+
+    对话  GET  <p>/api/chat                     { chat, transcript }
+          POST <p>/api/chat  op=create|bind|unbind|send|transcript
+          create -> sessionController.create({ cwd, agentPreset }) -> rename -> settings.session.id
+          send   -> sessionController.prompt({ mode:"followup", requestId })（不过 echo 闸门）
+    交办  GET  <p>/api/tasks                    { tasks, summary }
+          POST <p>/api/tasks op=create|update|dispatch|complete|fail|cancel
+    明细  GET  <p>/api/detail?session=<id>      目标 / 待办 / 轮次 / 最后一句 / 轨迹
+    授权  GET  <p>/api/policy                  { policy, actMode, actLevel, escalation }
+
+**任务状态机**：`queued -> assigned -> running -> review -> done / failed / cancelled`。
+`dispatch` 先过策略（`task.dispatch` 需要 L3）与 `actMode`：echo 只把单子写成 `assigned` 并留一句
+"动作已生成但未发送"，**预览不能有副作用**（不建会话、不发消息）；live 才解析目标
+（`session:<id>` / `agent:<id>` / 空 = 新开会话）并 `prompt`。失败累加 `attempts`，
+到 `tasks.maxAttempts`（默认 3）转 `failed`，否则回 `queued` 等下一轮。`tasks.tick()` 按
+`tasks.concurrency`（默认 1）补槽；会话 `turn/end` 时该会话上的 `running` 单转 `review`。
+
+**分级授权**（`policy.js`）：`actMode` 是最外层"要不要真的动"，`actLevel` 是内层"总管自己能动到哪"。
+
+    L1  只通知                       notify.send / digest.send
+    L2  只读与低危                   collect / slim / rules.reload / task.create
+    L3  写：派单、开会话、steer、cancel、改设置
+
+默认 L2；未列出的动作一律按 L3 处理（默认收紧）。主人从面板点按钮不受这一层限制——
+这一层只约束总管自己决定的时候。`gate()` 拒绝时只记 debug 日志，由调用方降级。
+
+**升级退役**：`escalation.enabled` 打开后，卡住的 agent 阶梯推进——先 `steer` 问一句卡在哪，
+冷却（默认 600 秒）后 `cancel`，仍不动则只报警一次；每步都先过 `actLevel` 与 `actMode`。
+
 
 ## 7. 硬约束
 

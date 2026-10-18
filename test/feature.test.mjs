@@ -173,7 +173,7 @@ test("panel html contains the pyramid and the control buttons", async () => {
     assert.ok(i >= 0, "missing section: " + needle);
     return i;
   };
-  const order = ["需要你处理", "控制", "正在发生", "Agent 明细", "记录", "维护"];
+  const order = ["需要你处理", "控制", "交办", "对话", "正在发生", "Agent 明细", "记录", "维护"];
   const positions = order.map(at);
   for (let i = 1; i < positions.length; i += 1) {
     assert.ok(positions[i - 1] < positions[i], order[i - 1] + " must sit above " + order[i]);
@@ -184,6 +184,15 @@ test("panel html contains the pyramid and the control buttons", async () => {
   assert.ok(res.body.includes('id="runs-count"'), "running workflow counter");
   assert.ok(res.body.includes('id="agents-count"'), "agent counter");
   assert.ok(res.body.includes('id="mods-count"'), "module counter");
+  // 指挥台：交办输入、对话记录、明细抽屉都在页面上，且「交办」在「对话」之上、「对话」在流程之上。
+  assert.ok(res.body.includes('id="tk-title"'), "task composer");
+  assert.ok(res.body.includes('id="tk-target"'), "task target picker");
+  assert.ok(res.body.includes('id="tasks"'), "task list");
+  assert.ok(res.body.includes('id="chat-log"'), "chat transcript");
+  assert.ok(res.body.includes('id="chat-text"'), "chat input");
+  assert.ok(res.body.includes('id="drawer"'), "detail drawer");
+  assert.ok(at('id="tk-title"') < at('id="chat-log"'), "tasks sit above the chat");
+  assert.ok(at('id="chat-log"') < at('id="runs"'), "chat sits above the reference sections");
   assert.ok(res.body.includes('class="vword'), "verdict word in the hero");
   assert.ok(res.body.includes('class="kpis"'), "kpi strip in the hero");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
@@ -319,5 +328,69 @@ test("every registered tool renders a content block array", () => {
     assert.equal(blocks[0].type, "text", t.name + " block type");
     assert.equal(blocks[0].text, "hello", t.name + " block text");
   }
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("ops console: chat, tasks, detail and policy routes", async () => {
+  const m = mount();
+  const steward = m.handler("steward");
+
+  // 分级授权：默认 L2 —— 能采样/瘦身，不能派活/steer。
+  const pol = await json(await call(steward, "GET", "/__polaris/steward/api/policy"));
+  assert.equal(pol.ok, true);
+  assert.equal(pol.actLevel, "L2");
+  assert.equal(pol.actMode, "echo");
+  assert.ok(pol.policy.allows.indexOf("slim") >= 0, "L2 allows slim");
+  assert.ok(pol.policy.denies.indexOf("task.dispatch") >= 0, "L2 denies task.dispatch");
+
+  // 交办：建单 -> 列出 -> echo 派发（不建会话、不发消息）-> 收口。
+  const created = await json(await call(steward, "POST", "/__polaris/steward/api/tasks", {
+    op: "create", title: "把 README 的旧截图换掉", brief: "换掉 2024 年那几张", acceptance: "README 里没有旧截图"
+  }));
+  assert.equal(created.ok, true);
+  assert.equal(created.task.status, "queued");
+  const taskId = created.task.id;
+
+  const listed = await json(await call(steward, "GET", "/__polaris/steward/api/tasks"));
+  assert.equal(listed.tasks.length, 1);
+  assert.equal(listed.summary.queued, 1);
+
+  const dispatched = await json(await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "dispatch", id: taskId }));
+  assert.equal(dispatched.ok, true);
+  assert.equal(dispatched.echo, true);
+  assert.equal(dispatched.task.status, "assigned");
+  assert.match(dispatched.task.result, /echo/);
+
+  const done = await json(await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "complete", id: taskId, result: "换完了" }));
+  assert.equal(done.task.status, "done");
+  assert.equal(done.task.result, "换完了");
+
+  // 空标题必须被拒。
+  const bad = await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "create", title: "  " });
+  assert.equal(bad.statusCode, 400);
+
+  // 对话：没有绑定会话时读得到状态、发不出话。
+  const chat = await json(await call(steward, "GET", "/__polaris/steward/api/chat"));
+  assert.equal(chat.ok, true);
+  assert.equal(chat.chat.bound, false);
+  assert.equal(chat.transcript.ok, false);
+  const refused = await call(steward, "POST", "/__polaris/steward/api/chat", { op: "send", text: "在吗" });
+  assert.equal(refused.statusCode, 400);
+  assert.equal((await json(refused)).reason, "no-bound-session");
+
+  // 带队详情：缺 session 参数是 400，给了但没有日志就 ok:false（不抛）。
+  assert.equal((await call(steward, "GET", "/__polaris/steward/api/detail")).statusCode, 400);
+  const detail = await json(await call(steward, "GET", "/__polaris/steward/api/detail?session=session-x"));
+  assert.equal(detail.ok, false);
+
+  // actLevel 走 /api/settings，脏值被 schema 拒。
+  const up = await call(steward, "POST", "/__polaris/steward/api/settings", { patch: { actLevel: "L3" } });
+  assert.equal(up.statusCode, 200);
+  const after = await json(await call(steward, "GET", "/__polaris/steward/api/policy"));
+  assert.equal(after.actLevel, "L3");
+  assert.ok(after.policy.allows.indexOf("task.dispatch") >= 0, "L3 allows task.dispatch");
+  const wrong = await call(steward, "POST", "/__polaris/steward/api/settings", { patch: { actLevel: "L9" } });
+  assert.equal(wrong.statusCode, 400);
+
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
