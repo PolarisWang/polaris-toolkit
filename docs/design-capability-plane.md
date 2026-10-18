@@ -1,7 +1,8 @@
 # 能力平面设计（v2）
 
-> 状态：设计稿 · v2 · 2026-10-18
+> 状态：设计稿 · v2.1 · 2026-10-18
 > 取代 v1（v1 的「六角色 + 能力/装备/窗口三层解析 + 只能收紧」模型已被否掉，见文末"已确认的决定"）。
+> v2.1 变更：固定规则那一整套（rules + expr + evaluator + wf/defs）并入能力平面 —— 判定能力(verdict) 与片段能力(plan)，见第 11 节；rules 引擎废弃。
 > 本文是实现依据；代码尚未按此改造。
 
 ---
@@ -12,6 +13,7 @@
   你说的 notify 只是 `notice × (desktop|lark.im) × owner × fire` 这一个组合。
 - **主管不是类型，是数据。** 代码里没有"守望者""记录员"这类角色。主管是一条编制记录：订阅什么、装备了哪些能力实例、自己的决策树、路由矩阵、发声会话。**装了什么能力，就有什么职责。**
 - **决策只有一处。** 运行时只读主管自己的显式决策树；能力只提供"可插入的树片段模板"（presets），插进树之后就属于树，运行时不回看能力默认值。没有覆盖层、没有收紧/放宽方向。
+- **固定规则并入能力。** 旧的 rules/expr/evaluator/wf 整套废弃：判定逻辑变成可装备的**判定能力**（payload=verdict），处置剧本变成可调用的**片段能力**（payload=plan）。判断力同样是"装了什么才有什么"。
 - **可配置的路由。** 谁是接收者(voice/inbox)、能不能发给某类对象(routes)、用哪个账号写到哪个文档(实例参数) —— 四层分开，各自回答一个明确问题。
 - **可观测是基础设施，不是能力。** trace/span/effect 由框架强制记录（不可绕过），主管只能通过 `query.*` 能力去读它。
 - **追查的目标是"不用翻日志"。** 每个结论可点开因果链；常见故障由体检页直接归因；任何一条 trace 可重放（what-if）。
@@ -35,29 +37,33 @@
 
 | 轴 | 取值 | 含义 |
 |---|---|---|
-| 载荷 payload | notice 通知 · report 汇报 · record 留档 · directive 指令 · answer 答复 · query 取数 · data 操作参数 | 内容语义与形状，决定参数 schema 与模板变量 |
-| 载体 carrier | desktop · lark.im · lark.doc · session · task · tool · peer · llm · file | 物理实现，一载体一 adapter |
+| 载荷 payload | notice 通知 · report 汇报 · record 留档 · directive 指令 · answer 答复 · query 取数 · verdict 判定 · plan 片段 · data 操作参数 | 内容语义与形状，决定参数 schema 与模板变量 |
+| 载体 carrier | desktop · lark.im · lark.doc · session · task · tool · peer · llm · file · expr 表达式求值 · tree 片段执行 | 物理实现，一载体一 adapter |
 | 对象 target | owner · steward:<id> · session:<id> · module:<id> · task:<id> · host · workspace:<p> · doc:<id> · peer:<host> | 逻辑接收者，由路由矩阵解析为具体地址 |
 | 协议 protocol | fire 发完就算 · ack 等确认 · ask 等主人答复 · stream 取一段 | 是否阻塞、是否进 dlq、是否要审批 |
 
 补充说明：
 - **定时不是载荷**。"每 30 分钟"属于决策树的 `when`（或 `wait`），不是能力。
 - **读取是能力**（query 载荷），不做成树的内置函数 —— 这样权限、预算、审计对读操作一致。
+- **判定是能力，不是树里内联的 if。** 判定能力(payload=verdict) 无副作用，只返回 {hit, level, reason, evidence}；可复用、可版本化、可共享给多个主管。
+- **片段是能力。** 一段可调用的子树(payload=plan) 把"怎么做"打包复用（旧 wf/defs.js 的 5 个剧本就是 5 个片段实例）。
 - **意图(Intent)不是能力**，它是编排器内部的裁决对象。
 
 ### 1.3 载体重用矩阵
 
 ~~~text
-         notice  report  record  directive  answer  query  data
-desktop    ●       ●       ○        ○         ○       ○      ○
-lark.im    ●       ●       ○        ○         ●       ○      ○
-lark.doc   ○       ○       ●        ○         ○       ○      ○
-session    ○       ○       ○        ●         ●       ●      ○
-task       ○       ○       ○        ●         ○       ○      ●
-tool       ○       ○       ○        ○         ○       ●      ●
-peer       ○       ●       ○        ○         ○       ○      ●
-llm        ○       ●       ○        ○         ○       ○      ●
-file       ●       ●       ●        ○         ○       ●      ○
+         notice  report  record  directive  answer  query  verdict  plan  data
+desktop    ●       ●       ○        ○         ○       ○       ○      ○     ○
+lark.im    ●       ●       ○        ○         ●       ○       ○      ○     ○
+lark.doc   ○       ○       ●        ○         ○       ○       ○      ○     ○
+session    ○       ○       ○        ●         ●       ●       ○      ○     ○
+task       ○       ○       ○        ●         ○       ○       ○      ○     ●
+tool       ○       ○       ○        ○         ○       ●       ○      ○     ●
+peer       ○       ●       ○        ○         ○       ○       ○      ○     ●
+llm        ○       ●       ○        ○         ○       ○       ○      ○     ●
+file       ●       ●       ●        ○         ○       ●       ○      ○     ○
+expr       ○       ○       ○        ○         ○       ○       ●      ○     ○
+tree       ○       ○       ○        ○         ○       ○       ○      ●     ○
 
 ● 已预设   ○ 组合可用，需要时开
 ~~~
@@ -85,6 +91,8 @@ file       ●       ●       ●        ○         ○       ●      ○
 | peer.send | data | peer | peer:<host> | ack | 联邦转发 | 复用壳 |
 | query.trace | query | tool | trace-store | ack | **主管主动查 trace**（观测用） | 新，小 |
 | query.journal | query | tool | store | ack | 主管主动查日志 | 新，小 |
+| judge.host.* | verdict | expr | host | ack | **判定能力**：打包一组判定（旧 rules） | 新，小 |
+| plan.* | plan | tree | steward | ack | **片段能力**：可调用子树（旧 wf 剧本） | 新，小 |
 | derive.summary | data | llm | text | ack | 会话摘要 | 可选，复用 classifier |
 
 扩展成本：加**载体**→写一个 adapter（一次性）；加**实例**→选组合填参数（多数零代码）。
@@ -359,7 +367,8 @@ trace t-1024  触发 host/heap.critical  主管 堆守望  主体 host   18ms   
 | actuators/{gated,prompt,notify,answer}.js | 载体 adapter（session/lark.im/desktop） |
 | policy.js 的 NEEDS + actLevel | equip.grant 单层 + 编排器裁决 |
 | tasks.js 的 dispatch/echo | task.* 能力实例 + 管线预演站 |
-| rules/ + wf/defs.js（两套规则语言） | 规则决定"要不要、谁、多急"；主管树决定"怎么做"（待 §11 对齐后收编） |
+| rules/builtin/system.json + rules/expr.js + evaluator | 判定能力实例（verdict × expr）；expr 算子降为 expr 载体的实现 |
+| wf/defs.js 的 5 个剧本 | 片段能力实例（plan × tree），主管树里 call 调用 |
 | store.js 的 signals/actions/journal | facts / intents / effects（journal 保留兼容） |
 | engine 的 runs/steps | span 存储的一部分（plan 步骤天然是 span） |
 | http.js 的 23 条路由 | 路由表不变，新增 traces/spans/effects/doctor 查询 |
@@ -382,7 +391,7 @@ trace t-1024  触发 host/heap.critical  主管 堆守望  主体 host   18ms   
 
 用户 2026-10-18 确认（m06419 / m06422）：
 
-1. 四要素取值表照本文采用（7 载荷 / 9 载体 / 9 对象 / 4 协议）。
+1. 四要素取值表照本文采用（v2.1 扩展为 9 载荷 / 11 载体 / 9 对象 / 4 协议；新增 verdict/plan 与 expr/tree）。
 2. `query.*` 归为能力（树里用 call 取数），不做成树内置函数。
 3. `voice` 允许 `virtual`（不占会话的主管）。
 4. 能力实例允许带默认参数，主管可改；参数 schema 在保存树时校验。
@@ -393,10 +402,77 @@ trace t-1024  触发 host/heap.critical  主管 堆守望  主体 host   18ms   
 9. 路由可配置（谁发给谁、从哪个 DSH session 发）。
 10. 能力可扩展增删，首批按 §1.4 预设。
 11. 面板展示、日志追踪、出问题的追查能力必须一并设计好（本文第 6 节）。
+12. 固定规则项划入能力体系：判定逻辑做成可装备的**判定能力**（verdict），有了这项能力就能判断；**rules 引擎废弃**（v2.1，第 11 节）。
+13. 旧处置剧本（wf/defs.js）同样并入，成为**片段能力**（plan）。
 
 ## 10. 未决
 
-- 固定规则（rules/ + wf/defs.js）与主管树的最终关系：是"规则只做入口与严重度、树做执行"，还是规则整体迁移进树？（§7 映射按前者暂定）
+- ~~固定规则与主管树的关系~~（已定：并入能力平面 —— 判定能力 + 片段能力，rules 引擎废弃，见第 11 节）。
 - `par` 并行提议的冲突裁决是否需要 subject 租约表。
 - trace 保留期与磁盘上限的具体数值（暂定 30 天 / L3 100 条）。
 - 能力仓是否需要"能力版本"（升级 adapter 时的兼容声明）。
+
+
+---
+
+## 11. 规则系统并入能力平面（v2.1）
+
+**决定：rules 引擎废弃，判断力也是能力。** 固定规则那一整套拆成两类能力，共用同一套装备 / 调用 / 授权 / 审计机制。
+
+| 旧物 | 变为 | 说明 |
+|---|---|---|
+| rules/builtin/system.json 的每条规则 | 一个**判定能力实例** | 载荷 verdict × 载体 expr，返回 {hit, level, reason, evidence} |
+| rules/expr.js 的 15 个算子 | expr 载体的公共实现 | 不再属于 rules 层，判定能力与主管树共用 |
+| evaluator / loadOverrides / shadowHours | 编排器职责 | cooldown → limits.cooldownSec；shadow → grant=dry-run；override → 直接改实例参数 |
+| rules/overrides/*.json | 实例参数（面板可改） | 目录与优先级链消失 |
+| wf/defs.js 的 5 个剧本 | 5 个**片段能力实例** | 载荷 plan × 载体 tree，主管树里 call 调用 |
+
+### 首批判定能力（现有 5 条规则 1:1 迁移）
+
+| 判定实例 | 判定内容 | 返回 level | 来源规则 |
+|---|---|---|---|
+| judge.heap.high | 堆占用 ≥88% | warning | host.heap.high |
+| judge.heap.critical | 堆占用 ≥92% | critical | host.heap.critical |
+| judge.loop.lag | 事件循环 P99 >250ms | warning | host.loop.lag |
+| judge.disk.low | 可用磁盘 <2GB | warning | host.disk.low |
+| judge.crash.new | 90 分钟内有新崩溃日志 | error | host.crash.new |
+
+### 首批片段能力
+
+| 片段实例 | 内容 | 来源 |
+|---|---|---|
+| plan.notify | 按严重度选通道通知主人 | wf.notify |
+| plan.ask | 问主人并等答复（走 ask.owner） | wf.ask |
+| plan.agent.stall | 查日志 → 催 → 再判断 → 报 | wf.agent.stall |
+| plan.host.protect | 瘦身 + 通知 + 留档 | wf.host.protect |
+| plan.digest | 汇总近期信号 + 记录 | wf.digest |
+
+### 主管怎么用（堆守望的树）
+
+~~~json
+{ "type": "when", "event": "host/tick",
+  "child": { "type": "seq", "steps": [
+    { "type": "call", "equip": "j1", "save": "heap" },
+    { "type": "choose", "branches": [
+      { "if": { "eq": ["heap.level", "critical"] },
+        "child": { "type": "seq", "steps": [
+          { "type": "call", "equip": "a1", "params": { "to": "owner", "level": "critical" } },
+          { "type": "call", "equip": "s1", "params": { "level": 3 } } ] } },
+      { "if": { "eq": ["heap.level", "warning"] },
+        "child": { "type": "call", "equip": "b1" } }
+    ], "fallback": { "type": "noop" } } ] }
+~~~
+
+### 为什么判定要做成能力（而不是留在树里内联 if）
+
+1. **可复用**：一个判定包能被任意多个主管装备（旧规则虽全局，但判定与动作绑死）。
+2. **可版本化**：阈值升级不用动任何主管的树。
+3. **可审计**：verdict 是一个 span，进 trace；"为什么报警"能直接看到是哪条判定命中、证据是什么。
+4. **可授权与限额**：判定也走 grant/预算，避免"判定风暴"烧掉预算。
+5. **可扩展**：加判定 = 加一个实例或写一个 expr 表达式，不改引擎。
+
+### 废弃清单
+
+- 删除：rules/builtin/system.json、rules/ 的 evaluator 与 overrides 目录、wf/defs.js 的硬编码剧本、settings 里的 shadowHours 字段。
+- 保留改造：rules/expr.js 的算子实现移入 expr 载体（判定能力与主管树共用）。
+- 兼容：历史审计记录（runs/steps/actions）保留可读，不再产生新记录。
