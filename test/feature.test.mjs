@@ -397,10 +397,21 @@ test("ops console: chat, tasks, detail and policy routes", async () => {
   assert.equal(dispatched.echo, true);
   assert.equal(dispatched.task.status, "assigned");
   assert.match(dispatched.task.result, /echo/);
+  assert.equal(dispatched.task.attempts, 0, "an echo preview is not an attempt");
+  const preview2 = await json(await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "dispatch", id: taskId }));
+  assert.equal(preview2.ok, true);
+  assert.equal(preview2.task.attempts, 0, "previewing again still costs no attempt");
 
   const done = await json(await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "complete", id: taskId, result: "换完了" }));
   assert.equal(done.task.status, "done");
   assert.equal(done.task.result, "换完了");
+
+  // 状态机守卫：收口之后不能再 complete / cancel / fail。
+  const closedAgain = await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "complete", id: taskId, result: "再来一次" });
+  assert.equal(closedAgain.statusCode, 400);
+  assert.equal((await json(closedAgain)).reason, "already-closed");
+  const closedCancel = await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "cancel", id: taskId });
+  assert.equal((await json(closedCancel)).reason, "already-closed");
 
   // 空标题必须被拒。
   const bad = await call(steward, "POST", "/__polaris/steward/api/tasks", { op: "create", title: "  " });
