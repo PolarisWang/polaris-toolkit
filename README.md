@@ -293,7 +293,7 @@ _test/ 与 node_modules 不会进入注入副本（files 字段只列 lib / bin 
 - 审批：`POST api/answer {id, answer, version}` 带版本 CAS，两个端同时点只有一个生效；到期自动作废。
 - 上报：desktop 通道（内存环形 200 条）永远可用；飞书走本机 `lark-cli`
   （`notify.larkEnabled=true` 才启用，`notify.minSeverity` 默认 warning）。
-- 会话：主管会话由面板「新建主管会话」或 `POST api/chat {op:"create"}` 建立
+- 会话：主管会话由面板「新建主管会话」或 `POST api/chat {op:"create"}` 建立；工作目录默认取 `session.cwd`，没配就用第一个模块的工作区，再退回用户主目录（不用宿主进程的 cwd）
   （`sessionController.create` → 改名 → 写 `session.id`），之后 `session.mode=auto` 才会自己再开；
   `rotateTurns/rotateTokens`（默认 200 轮 / 300k token）留给换届预算，压力公式见设计文档 8.5。
 - 联邦：只有 `federation.secret` 长度 >= 16 才启用。HMAC-SHA256 信封、nonce 去重、
