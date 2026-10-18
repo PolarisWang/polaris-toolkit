@@ -17,7 +17,15 @@ function makeCtx() {
   const routes = [];
   const tools = [];
   const logs = [];
+  const listeners = new Map();
   const ctx = {
+    on(event, fn) {
+      const arr = listeners.get(event) || [];
+      arr.push(fn);
+      listeners.set(event, arr);
+      return () => { const i = arr.indexOf(fn); if (i >= 0) arr.splice(i, 1); };
+    },
+    emit(event, payload) { for (const fn of (listeners.get(event) || []).slice()) fn(payload); },
     logger: { info: (m) => logs.push("info " + m), warn: (m) => logs.push("warn " + m), error: (m) => logs.push("error " + m) },
     effect(fn, label) {
       const off = fn();
@@ -86,9 +94,9 @@ const result = mountToolkit(ctx, { features: { "heap-guard": { intervalSec: 30 }
   features: FEATURES
 });
 
-assert.deepEqual(result.features, ["heap-guard"], "heap-guard should be mounted");
-assert.equal(routes.length, 2, "toolkit + one feature route");
-assert.equal(tools.length, 4, "four agent tools");
+assert.deepEqual(result.features, ["heap-guard", "steward"], "both features mounted in order");
+assert.equal(routes.length, 3, "toolkit + two feature routes");
+assert.equal(tools.length, 5, "five agent tools");
 
 const toolkit = routes.filter((r) => r.path === "/__polaris")[0].handler;
 const feature = routes.filter((r) => r.path === "/__polaris/heap-guard")[0].handler;
@@ -97,7 +105,7 @@ assert.ok(typeof toolkit === "function" && typeof feature === "function", "handl
 // 1. feature list + live status
 const features = await json(await call(toolkit, "GET", "/__polaris/api/features"));
 assert.equal(features.ok, true);
-assert.equal(features.features.length, 1);
+assert.equal(features.features.length, 2);
 const f = features.features[0];
 assert.equal(f.id, "heap-guard");
 assert.equal(f.title, "Heap Guard");
@@ -175,7 +183,7 @@ assert.equal((await call(toolkit, "GET", "/__polaris/nope")).statusCode, 404, "t
 
 // 10. tools are real specs
 const names = tools.map((t) => t.name).sort();
-assert.deepEqual(names, ["heap_bili", "heap_slim", "heap_snapshot", "heap_status"]);
+assert.deepEqual(names, ["heap_bili", "heap_slim", "heap_snapshot", "heap_status", "steward_observe"]);
 const status = await tools.filter((t) => t.name === "heap_status")[0].execute({}, { signal: { throwIfAborted() {} } });
 assert.ok(typeof status.text === "string" && status.text.includes("heap-guard"), "heap_status text");
 
@@ -184,6 +192,39 @@ const file = path.join(stateDir(), "settings.json");
 assert.ok(fs.existsSync(file), "settings file written: " + file);
 const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
 assert.equal(onDisk["heap-guard"].slimLevel, 2);
+
+// 13. steward: 事件总线 -> 账本 -> 路由 -> 面板
+const steward = routes.filter((r) => r.path === "/__polaris/steward")[0].handler;
+assert.ok(typeof steward === "function", "steward route registered");
+const stewardPanel = await call(steward, "GET", "/__polaris/steward/");
+assert.equal(stewardPanel.statusCode, 200);
+assert.ok(stewardPanel.body.includes("大内总管"), "steward panel renders");
+
+ctx.emit("agent/created", { agentId: "agent-1", sessionId: "session-aaa", status: "idle" });
+ctx.emit("agent/status", { agent: { id: "agent-1" }, status: "running" });
+let sstate = await json(await call(steward, "GET", "/__polaris/steward/api/state"));
+assert.equal(sstate.ok, true);
+assert.equal(sstate.agents.length, 1, "agent observed through the bus");
+assert.equal(sstate.agents[0].status, "running");
+assert.equal(sstate.agents[0].moduleId, "unassigned", "no module match yet");
+assert.ok(Array.isArray(sstate.modules) && sstate.modules.length >= 5, "module buckets present");
+
+const pinned = await json(await call(steward, "POST", "/__polaris/steward/api/pin", { agentId: "agent-1", module: "dsh" }));
+assert.equal(pinned.ok, true);
+sstate = await json(await call(steward, "GET", "/__polaris/steward/api/state"));
+assert.equal(sstate.agents[0].moduleId, "dsh", "pin wins over fallback");
+assert.equal(sstate.agents[0].routeReason, "pinned:agent");
+
+ctx.emit("agent/error", { agentId: "agent-1", message: "boom" });
+
+sstate = await json(await call(steward, "GET", "/__polaris/steward/api/state"));
+assert.ok(sstate.signals.some((x) => x.kind === "agent/error" && x.severity === "error"), "error signal recorded");
+assert.equal(sstate.counters.errors, 1, "error counter advanced");
+
+const collected = await json(await call(steward, "POST", "/__polaris/steward/api/action", { id: "collect" }));
+assert.equal(collected.ok, true, "collect action works");
+const st = await json(await call(steward, "GET", "/__polaris/steward/api/tick"));
+assert.ok(Array.isArray(st.rev), "steward heartbeat rev");
 
 const routeCount = routes.length;
 
