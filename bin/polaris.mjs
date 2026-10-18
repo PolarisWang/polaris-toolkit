@@ -4,6 +4,7 @@
  *
  *   node bin/polaris.mjs install [--profile <dir>] [--no-bundles] [--no-pnpm] [--keep-old]
  *   node bin/polaris.mjs doctor  [--profile <dir>] [--json] [--quiet]
+ *   node bin/polaris.mjs token   [--path]
  *   node bin/polaris.mjs version | help
  *
  * 为什么要有它：以前"装好了没 / 装的是哪一版 / 仓库改了但 node_modules 里还是旧的"
@@ -76,6 +77,27 @@ function countFiles(dir) {
   return n;
 }
 
+/** 仓库里最新的源码文件（lib/ 与 bin/ 下的 .js/.mjs/.json）。 */
+function newestSource(repoRoot) {
+  let ms = 0;
+  let rel = "";
+  for (const sub of ["lib", "bin"]) {
+    const walk = (d) => {
+      let entries;
+      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const full = path.join(d, e.name);
+        if (e.isDirectory()) { if (e.name !== "node_modules") walk(full); continue; }
+        if (!/\.(js|mjs|json)$/.test(e.name)) continue;
+        const m = mtime(full);
+        if (m > ms) { ms = m; rel = path.relative(repoRoot, full); }
+      }
+    };
+    walk(path.join(repoRoot, sub));
+  }
+  return { ms, rel };
+}
+
 function mtime(file) {
   try { return fs.statSync(file).mtimeMs; } catch { return 0; }
 }
@@ -116,6 +138,15 @@ function doctor(opts) {
     check(list, "install-record", stale ? "warn" : "ok", "上次安装 " + String(installed.at === undefined ? "?" : installed.at),
       "版本 " + String(installed.version) + " · " + String(installed.files) + " 个文件 · 仓库 " + String(installed.repo),
       stale ? "装机来源不是当前仓库，重新安装" : undefined);
+    // 仓库代码比 install.json 新 = 改了没装（offline 只能查到这一层；"装完没重启"由 /api/install 的 stale 判断）
+    const at = Date.parse(String(installed.at === undefined ? "" : installed.at));
+    const newest = newestSource(REPO);
+    if (Number.isFinite(at) && newest.ms > at + 2000) {
+      check(list, "install-drift", "warn", "仓库代码比上次安装新", newest.rel + "（" + new Date(newest.ms).toISOString() + "）",
+        "跑 polaris install 同步，然后重启宿主（Node 不会热重载已装载模块）");
+    } else if (Number.isFinite(at)) {
+      check(list, "install-drift", "ok", "仓库与装机记录一致", new Date(at).toISOString());
+    }
   }
 
   // 4) profile 清单
@@ -236,6 +267,34 @@ function render(list, opts) {
   return bad;
 }
 
+// ---------- token ----------
+
+/** 写操作令牌：面板靠 cookie 自动带，命令行/脚本要自己加头。 */
+function token(opts) {
+  const file = path.join(stateDir(), "secret");
+  const value = fs.existsSync(file) ? String(fs.readFileSync(file, "utf8")).trim() : "";
+  if (opts.pathOnly === true) {
+    process.stdout.write(file + "\n");
+    return 0;
+  }
+  if (value === "") {
+    process.stderr.write("还没有令牌：" + file + " 不存在。宿主首次加载时会生成，先启动一次 DSH。\n");
+    return 1;
+  }
+  process.stdout.write([
+    "file    " + file,
+    "header  x-polaris-token: " + value,
+    "",
+    "例（把 <port> 换成 dsh web 打印的端口）：",
+    "  curl -H \"x-polaris-token: " + value + "\" \\",
+    "       -H \"content-type: application/json\" \\",
+    "       -d '{\"feature\":\"steward\",\"patch\":{}}' \\",
+    "       http://127.0.0.1:<port>/__polaris/api/settings",
+    ""
+  ].join("\n"));
+  return 0;
+}
+
 // ---------- install ----------
 
 function install(opts) {
@@ -301,7 +360,7 @@ function install(opts) {
 // ---------- CLI ----------
 
 function parseArgs(argv) {
-  const out = { command: argv[0] === undefined ? "help" : String(argv[0]), profile: undefined, json: false, quiet: false, noBundles: false, noPnpm: false, keepOld: false };
+  const out = { command: argv[0] === undefined ? "help" : String(argv[0]), profile: undefined, json: false, quiet: false, noBundles: false, noPnpm: false, keepOld: false, pathOnly: false };
   for (let i = 1; i < argv.length; i += 1) {
     const a = String(argv[i]);
     if (a === "--profile" || a === "-p") { out.profile = argv[i + 1]; i += 1; continue; }
@@ -311,6 +370,7 @@ function parseArgs(argv) {
     if (a === "--no-bundles") { out.noBundles = true; continue; }
     if (a === "--no-pnpm") { out.noPnpm = true; continue; }
     if (a === "--keep-old") { out.keepOld = true; continue; }
+    if (a === "--path" || a === "--path-only") { out.pathOnly = true; continue; }
   }
   return out;
 }
@@ -326,6 +386,8 @@ function help() {
     "  polaris doctor [--profile <dir>] [--json] [--quiet]",
     "      只读体检：清单、注入标记、bundle 登记、已安装副本、漂移、状态目录、令牌。",
     "      有问题时退出码为 1，方便脚本判断。",
+    "  polaris token [--path]",
+    "      打印写操作令牌（x-polaris-token）；--path 只打印文件路径。",
     "  polaris version | help",
     ""
   ].join("\n"));
@@ -334,6 +396,7 @@ function help() {
 const opts = parseArgs(process.argv.slice(2));
 if (opts.command === "install") process.exit(install(opts));
 if (opts.command === "doctor") process.exit(render(doctor(opts), opts) === 0 ? 0 : 1);
+if (opts.command === "token") process.exit(token(opts));
 if (opts.command === "version" || opts.command === "--version" || opts.command === "-v") {
   const pkg = readPkg(REPO);
   process.stdout.write(String(pkg === undefined || pkg.version === undefined ? "?" : pkg.version) + "\n");

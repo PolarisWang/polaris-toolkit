@@ -5,96 +5,15 @@
  * 保证「挂载不崩、路由可用、事件能落到账本、dispose 干净」。
  */
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { Readable } from "node:stream";
 import { test } from "node:test";
 
-const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "polaris-home-"));
-process.env.DSH_HOME = HOME;
-
-const { FEATURES } = await import("../lib/features/index.js");
-const { mountToolkit } = await import("../lib/core/host.js");
-
-function makeCtx(overrides = {}) {
-  const effects = [];
-  const routes = [];
-  const tools = [];
-  const logs = [];
-  const listeners = new Map();
-  const ctx = {
-    on(event, fn) {
-      const arr = listeners.get(event) || [];
-      arr.push(fn);
-      listeners.set(event, arr);
-      return () => { const i = arr.indexOf(fn); if (i >= 0) arr.splice(i, 1); };
-    },
-    emit(event, payload) { for (const fn of (listeners.get(event) || []).slice()) fn(payload); },
-    logger: {
-      info: (m) => logs.push("info " + m),
-      warn: (m) => logs.push("warn " + m),
-      error: (m) => logs.push("error " + m)
-    },
-    effect(fn) { const off = fn(); effects.push(off); return () => {}; },
-    webServer: { register(opts) { routes.push(opts); return () => {}; } },
-    tools: { register(tool) { tools.push(tool); return () => {}; } },
-    agents: { list: () => [], get: () => undefined },
-    get: () => undefined,
-    ...overrides
-  };
-  return { ctx, effects, routes, tools, logs };
-}
-
-function mount(overrides) {
-  const env = makeCtx(overrides);
-  const result = mountToolkit(env.ctx, { features: {} }, {
-    name: "polaris-toolkit",
-    prefix: "/__polaris",
-    displayName: "Polaris Toolkit",
-    features: FEATURES
-  });
-  TOKEN = result.token;
-  const handler = (name) => env.routes.filter((r) => r.path === "/__polaris/" + name)[0].handler;
-  const toolkit = env.routes.filter((r) => r.path === "/__polaris")[0].handler;
-  return { ...env, result, handler, toolkit };
-}
-
-function fakeRes() {
-  return {
-    statusCode: 0, headers: {}, body: "",
-    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
-    end(body) { this.body = body === undefined ? "" : String(body); }
-  };
-}
-
-let TOKEN = "";
-
-function fakeReq(method, url, body) {
-  const req = new Readable({ read() {} });
-  req.method = method;
-  req.url = url;
-  req.headers = { host: "127.0.0.1:1" };
-  if (TOKEN !== "") req.headers["x-polaris-token"] = TOKEN;
-  if (body !== undefined) req.push(Buffer.from(JSON.stringify(body), "utf8"));
-  req.push(null);
-  return req;
-}
-
-async function call(handler, method, url, body) {
-  const res = fakeRes();
-  await handler(fakeReq(method, url, body), res);
-  await new Promise((r) => setTimeout(r, 20));
-  return res;
-}
-
-async function json(res) { return JSON.parse(res.body); }
+const { mount, call, json, getToken, setToken } = await import("./helpers/harness.mjs");
 
 test("mounts both features without throwing", () => {
   const m = mount();
   assert.deepEqual(m.result.features, ["heap-guard", "steward"]);
   assert.equal(m.routes.length, 3);
-  assert.equal(m.tools.length, 9);
+  assert.equal(m.tools.length, 15);
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
@@ -178,7 +97,9 @@ test("panel html contains the pyramid and the control buttons", async () => {
   assert.ok(res.body.includes("大内总管"));
   assert.ok(res.body.includes("自动动作"), "auto toggle");
   assert.ok(res.body.includes("飞书通知"), "lark toggle");
-  assert.ok(res.body.includes("待批"), "approvals section");
+  assert.ok(res.body.includes("要我拍板"), "merged decision queue");
+  assert.ok(res.body.includes('id="asks"'), "agent questions share the queue");
+  assert.ok(res.body.includes("answerQuestion"), "the queue can answer an agent question");
   assert.ok(res.body.includes("工作流"), "runs section");
 
   // 金字塔：待批（要你动手）在控制条之上，控制条在流程/模块之上，明细与记录沉到底部，维护收进折叠区。
@@ -187,7 +108,7 @@ test("panel html contains the pyramid and the control buttons", async () => {
     assert.ok(i >= 0, "missing section: " + needle);
     return i;
   };
-  const order = ['id="attn-count"', 'id="btn-auto"', 'id="tk-title"', 'id="chat-log"', 'id="runs"', 'id="stewards-count"', 'id="catalog-count"', 'id="routes-count"', 'id="agents-count"', 'id="echoes"', 'id="audit-count"', 'id="traces"', 'id="doctor-count"', 'class="maint"'];
+  const order = ['id="attn-count"', 'id="btn-auto"', 'id="settings-form"', 'id="tk-title"', 'id="chat-log"', 'id="runs"', 'id="stewards-count"', 'id="catalog-count"', 'id="routes-count"', 'id="agents-count"', 'id="echoes"', 'id="audit-count"', 'id="traces"', 'id="doctor-count"', 'class="maint"'];
   const positions = order.map(at);
   for (let i = 1; i < positions.length; i += 1) {
     assert.ok(positions[i - 1] < positions[i], order[i - 1] + " must sit above " + order[i]);
@@ -204,6 +125,11 @@ test("panel html contains the pyramid and the control buttons", async () => {
   assert.ok(at('id="traces"') < at('class="maint"'), "trace view sits above the maintenance fold");
   // 内联 onclick 在全局作用域求值，面板必须把函数挂到 window（曾经的静默回归：按钮点了没反应）。
   assert.ok(res.body.includes("GLOBAL_FNS"), "inline handlers are exposed to window");
+  // P1-A 设置：常用旋钮表单（按 data-path 读写）+ 跳去外壳面板编辑整份 settings.json。
+  assert.ok(res.body.includes('id="settings-form"'), "settings form");
+  assert.ok(res.body.includes('data-path="actLevel"') || res.body.includes("SET_FIELDS"), "settings fields are declared");
+  assert.ok(res.body.includes('id="set-msg"'), "settings status line");
+  assert.ok(res.body.includes("saveSettings") && res.body.includes("openRawSettings"), "settings actions bound");
   // 指挥台：交办输入、对话记录、明细抽屉都在页面上，且「交办」在「对话」之上、「对话」在流程之上。
   assert.ok(res.body.includes('id="tk-title"'), "task composer");
   assert.ok(res.body.includes('id="tk-target"'), "task target picker");
@@ -265,13 +191,13 @@ test("toolkit metrics endpoint exports host and feature gauges", async () => {
 
 test("write routes need the install token, read routes stay open", async () => {
   const m = mount();
-  const saved = TOKEN;
-  TOKEN = "";
+  const saved = getToken();
+  setToken("");
   const denied = await call(m.toolkit, "POST", "/__polaris/api/settings", { feature: "heap-guard", patch: { autoSlim: true } });
   assert.ok(denied.statusCode === 401 || denied.statusCode === 403, "write refused, got " + denied.statusCode);
   const read = await call(m.toolkit, "GET", "/__polaris/api/features");
   assert.equal(read.statusCode, 200, "read stays open");
-  TOKEN = saved;
+  setToken(saved);
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
@@ -283,6 +209,36 @@ test("invalid settings patches are rejected with 400", async () => {
   assert.equal(body.code, "invalid-settings");
   const ok = await call(m.toolkit, "POST", "/__polaris/api/settings", { feature: "heap-guard", patch: { slimLevel: 2 } });
   assert.equal(ok.statusCode, 200, "valid nested patch still applies");
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("raw settings api reads and replaces the whole settings.json", async () => {
+  const m = mount();
+  const raw = await json(await call(m.toolkit, "GET", "/__polaris/api/settings/raw"));
+  assert.equal(raw.ok, true, "raw read ok");
+  assert.equal(raw.doc.v, 1, "version envelope is exposed");
+  assert.equal(typeof raw.doc.d, "object", "feature map is exposed");
+  assert.ok(typeof raw.file === "string" && raw.file.endsWith("settings.json"), "file path");
+
+  const doc = raw.doc;
+  doc.d.steward = Object.assign({}, doc.d.steward, { budgetPerHour: 42 });
+  const saved = await call(m.toolkit, "POST", "/__polaris/api/settings/raw", { doc });
+  assert.equal(saved.statusCode, 200, "whole document accepted");
+  const after = await json(await call(m.toolkit, "GET", "/__polaris/api/settings?feature=steward"));
+  assert.equal(after.settings.budgetPerHour, 42, "replacement took effect");
+
+  // 非法片段：整份拒绝，磁盘上的值不动。
+  const bad = await call(m.toolkit, "POST", "/__polaris/api/settings/raw", { text: JSON.stringify({ v: 1, d: { steward: { budgetPerHour: 0 } } }) });
+  assert.equal(bad.statusCode, 400, "invalid slice refused");
+  assert.equal((await json(bad)).code, "invalid-settings");
+  const still = await json(await call(m.toolkit, "GET", "/__polaris/api/settings?feature=steward"));
+  assert.equal(still.settings.budgetPerHour, 42, "no partial write on failure");
+
+  const notJson = await call(m.toolkit, "POST", "/__polaris/api/settings/raw", { text: "{ nope" });
+  assert.equal(notJson.statusCode, 400, "malformed JSON refused");
+
+  const restore = await call(m.toolkit, "POST", "/__polaris/api/settings/raw", { text: JSON.stringify({ v: 1, d: { steward: { budgetPerHour: 60 } } }) });
+  assert.equal(restore.statusCode, 200, "restored baseline");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 
@@ -358,13 +314,73 @@ test("every registered tool renders a content block array", () => {
   // DSH defineTool 的 render(args, value) 必须回数组；回单个对象会让调用侧
   // 在 content.some(...) 处炸掉（steward_* 五个工具曾经全中，堆工具用的是数组所以没暴露）。
   const m = mount();
-  assert.equal(m.tools.length, 9);
+  assert.equal(m.tools.length, 15);
   for (const t of m.tools) {
     const blocks = t.output.render({}, { text: "hello" });
     assert.ok(Array.isArray(blocks), t.name + " render returns an array");
     assert.equal(blocks[0].type, "text", t.name + " block type");
     assert.equal(blocks[0].text, "hello", t.name + " block text");
   }
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("steward_settings tool reads, patches, and refuses invalid patches (P1-A)", async () => {
+  // agent 侧免令牌：工具直接走宿主注册表，与面板用同一条校验/落盘路径。
+  const m = mount();
+  const tool = m.tools.filter((t) => t.name === "steward_settings")[0];
+  assert.ok(tool !== undefined, "steward_settings is registered");
+
+  const cfgOf = (t) => JSON.parse(t.text.split("\n").slice(1).join("\n"));
+
+  const got = await tool.execute({ op: "get" });
+  assert.match(got.text, /steward_settings {2}steward/);
+  assert.equal(cfgOf(got).actMode, "echo");
+
+  const set = await tool.execute({ op: "set", patch: { actLevel: "L3" } });
+  assert.match(set.text, /steward_settings set/);
+  assert.equal(cfgOf(set).actLevel, "L3");
+
+  const refused = await tool.execute({ op: "set", patch: { actLevel: "L9" } });
+  assert.match(refused.text, /refused/);
+  assert.match(refused.text, /L1|L2|L3/);
+
+  const raw = await tool.execute({ op: "raw" });
+  const doc = JSON.parse(raw.text);
+  assert.equal(doc.ok, true);
+  assert.equal(doc.doc.v, 1);
+  assert.equal(doc.doc.d.steward.actLevel, "L3", "a refused patch must not stick");
+
+  const replaced = await tool.execute({ op: "replace", text: JSON.stringify({ v: 1, d: { steward: { actLevel: "L1" } } }) });
+  assert.match(replaced.text, /replaced whole document/);
+  const afterReplace = JSON.parse((await tool.execute({ op: "raw" })).text);
+  assert.equal(afterReplace.doc.d.steward.actLevel, "L1");
+
+  const badJson = await tool.execute({ op: "replace", text: "{ nope" });
+  assert.match(badJson.text, /invalid JSON/);
+  const back = await tool.execute({ op: "set", patch: { actLevel: "L2" } });
+  assert.match(back.text, /steward_settings set/);
+
+  const unknown = await tool.execute({ op: "get", feature: "nope" });
+  assert.match(unknown.text, /^steward_settings {2}nope\n\{\}$/);
+  for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
+});
+
+test("question queue route refuses a malformed or non-live answer (P2-B)", async () => {
+  const m = mount();
+  const steward = m.handler("steward");
+
+  const noCall = await call(steward, "POST", "/__polaris/steward/api/question/answer", { answers: [{ id: "q1", selected: ["a"] }] });
+  assert.equal(noCall.statusCode, 400);
+  assert.equal((await json(noCall)).reason, "callId-required");
+
+  const noAnswers = await call(steward, "POST", "/__polaris/steward/api/question/answer", { callId: "call-1", answers: [] });
+  assert.equal(noAnswers.statusCode, 400);
+  assert.equal((await json(noAnswers)).reason, "answers-required");
+
+  // 假宿主里没有活着的 agent，宿主约束应该变成可预期的 404，而不是抛错。
+  const noAgent = await call(steward, "POST", "/__polaris/steward/api/question/answer", { agentId: "agent-1", callId: "call-1", answers: [{ id: "q1", selected: ["a"] }] });
+  assert.equal(noAgent.statusCode, 404);
+  assert.equal((await json(noAgent)).reason, "agent-not-live");
   for (const off of m.effects) { try { off(); } catch { /* ignore */ } }
 });
 

@@ -105,7 +105,7 @@ const result = mountToolkit(ctx, { features: { "heap-guard": { intervalSec: 30 }
 
 assert.deepEqual(result.features, ["heap-guard", "steward"], "both features mounted in order");
 assert.equal(routes.length, 3, "toolkit + two feature routes");
-assert.equal(tools.length, 9, "nine agent tools");
+assert.equal(tools.length, 15, "fifteen agent tools");
 
 TOKEN = result.token;
 
@@ -196,7 +196,8 @@ assert.equal((await call(toolkit, "GET", "/__polaris/nope")).statusCode, 404, "t
 const names = tools.map((t) => t.name).sort();
 assert.deepEqual(names, [
   "heap_bili", "heap_slim", "heap_snapshot", "heap_status",
-  "steward_ask", "steward_begin", "steward_observe", "steward_report", "steward_status"
+  "steward_ask", "steward_audit", "steward_begin", "steward_chat", "steward_observe", "steward_report",
+  "steward_settings", "steward_status", "steward_stewards", "steward_tasks", "steward_trace"
 ]);
 const status = await tools.filter((t) => t.name === "heap_status")[0].execute({}, { signal: { throwIfAborted() {} } });
 assert.ok(typeof status.text === "string" && status.text.includes("heap-guard"), "heap_status text");

@@ -23,10 +23,33 @@ function harness(opts) {
     db, store, log: () => {}, readSettings: () => opts.settings, policy: { gate },
     chat: opts.chat, prompter: opts.prompter
   });
-  return { tasks, actions };
+  return { tasks, actions, db };
 }
 
-const echoSettings = () => ({ actMode: "echo", tasks: { concurrency: 1, autoDispatch: true, maxAttempts: 3 } });
+const echoSettings = () => ({ actMode: "echo", tasks: { concurrency: 1, autoDispatch: true, maxAttempts: 3, retainDays: 14 } });
+
+test("archive hides closed tasks from lists and stats but keeps them readable", () => {
+  const settings = echoSettings();
+  const h = harness({ settings });
+  const oldId = h.tasks.create({ title: "老的" }).task.id;
+  const newId = h.tasks.create({ title: "新的" }).task.id;
+  h.tasks.complete(oldId, { result: "done" });
+  h.tasks.complete(newId, { result: "done" });
+  // 把老单子的关闭时间挪到 30 天前，模拟历史数据（fakeDb.get 返回副本，必须走 update）。
+  h.db.update("tasks", { id: oldId }, { done_at: Date.now() - 30 * 86_400_000 });
+
+  const out = h.tasks.archive({ days: 14 });
+  assert.equal(out.count, 1, "只归档过了保留期的");
+  assert.deepEqual(h.tasks.list({}).map((r) => r.id), [newId], "列表只剩没归档的");
+  assert.equal(h.tasks.list({ archived: true }).length, 1, "归档的还能翻出来");
+  assert.equal(h.tasks.get(oldId).archived, true, "历史仍可读");
+  assert.equal(h.tasks.summary().total, 1, "统计不含归档");
+  assert.equal(h.actions.filter((a) => String(a.message).indexOf("归档") === 0).length, 1, "归档留一条账");
+
+  const again = h.tasks.archive({ days: 14 });
+  assert.equal(again.count, 0, "重复归档不动已归档的行");
+});
+
 
 test("auto dispatch behind a lower actLevel logs the denial once, not every tick", async () => {
   const settings = echoSettings();

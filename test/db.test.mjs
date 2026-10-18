@@ -19,6 +19,23 @@ test("schema lists the design tables plus the task queue", () => {
   }
 });
 
+test("sqlite: an existing database gains columns added to schema.js later", () => {
+  const dir = tmpDir();
+  const sqlite = process.getBuiltinModule("node:sqlite");
+  const handle = new sqlite.DatabaseSync(path.join(dir, "steward.db"));
+  handle.exec('CREATE TABLE "tasks" ("id" INTEGER, "title" TEXT, PRIMARY KEY ("id"))');
+  handle.prepare('INSERT INTO "tasks" ("id", "title") VALUES (?, ?)').run(7, "旧库里的单子");
+  handle.close();
+
+  const db = createDb({ dir, backend: "sqlite", log: () => {} });
+  assert.equal(db.get("tasks", { id: 7 }).title, "旧库里的单子", "老数据没丢");
+  db.update("tasks", { id: 7 }, { archived: 1 });
+  assert.equal(db.get("tasks", { id: 7 }).archived, 1, "补上的列可写可读");
+  db.insert("tasks", { title: "新单子", archived: 0 });
+  assert.equal(db.all("tasks").length, 2);
+  db.closeSafely();
+});
+
 for (const backend of BACKENDS) {
   test(backend + ": insert auto id, get, update, find, remove", () => {
     const db = createDb({ dir: tmpDir(), backend, log: () => {} });
